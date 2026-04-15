@@ -90,5 +90,5 @@ When adding features:
 ## Commit and PR Guidelines
 
 - Prefer small, focused PRs with one primary intent.
-- Before opening a PR, run: `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`.
+- Before committing or opening a PR, run: `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`.
 - In the PR description, include what changed, why, and how you validated it.
