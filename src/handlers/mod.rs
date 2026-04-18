@@ -1,5 +1,9 @@
+pub mod validate;
+
 use axum::Json;
 use serde::Serialize;
+
+pub use validate::validate_handler;
 
 #[derive(Serialize)]
 pub struct HealthResponse {

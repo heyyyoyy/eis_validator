@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 pub struct AppConfig {
     pub host: String,
     pub port: u16,
+    #[allow(dead_code)]
     pub log_level: String,
 }
 
