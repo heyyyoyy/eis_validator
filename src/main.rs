@@ -25,30 +25,43 @@ async fn main() {
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
-    let tls_config = RustlsConfig::from_pem_file(&config.tls_cert_path, &config.tls_key_path)
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to load TLS certs ({} / {}): {e}\n\
-                 Run `cargo run --bin generate_certs` first.",
-                config.tls_cert_path, config.tls_key_path
-            )
+    if config.use_tls {
+        let tls_config = RustlsConfig::from_pem_file(&config.tls_cert_path, &config.tls_key_path)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to load TLS certs ({} / {}): {e}\n\
+                     Run `cargo run --bin generate_certs` first.",
+                    config.tls_cert_path, config.tls_key_path
+                )
+            });
+
+        tracing::info!("Starting HTTPS server on {}", addr);
+
+        let handle = axum_server::Handle::new();
+        let shutdown_handle = handle.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
         });
 
-    tracing::info!("Starting HTTPS server on {}", addr);
+        axum_server::bind_rustls(addr, tls_config)
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await
+            .expect("server error");
+    } else {
+        tracing::info!("Starting HTTP server on {}", addr);
 
-    let handle = axum_server::Handle::new();
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
-    });
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("failed to bind address");
 
-    axum_server::bind_rustls(addr, tls_config)
-        .handle(handle)
-        .serve(app.into_make_service())
-        .await
-        .expect("server error");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .expect("server error");
+    }
 }
 
 async fn shutdown_signal() {
