@@ -12,6 +12,9 @@
 - `thiserror`, `tracing`, `tracing-subscriber`
 - `libxml` (libxml2 binding for XSD validation)
 - `tempfile` (temporary file management)
+- `quick-xml` (XML parsing and pretty-printing)
+- `encoding_rs` (Windows-1251 → UTF-8 transcoding)
+- `base64` (Base64 decoding)
 
 ## Repository Structure
 
@@ -28,6 +31,7 @@
     ├── error.rs
     ├── handlers
     │   ├── mod.rs
+    │   ├── parse.rs
     │   └── validate.rs
     ├── middleware
     │   └── mod.rs
@@ -41,6 +45,7 @@
 - `src/config.rs`: environment-based app config
 - `src/routes/mod.rs`: route registration
 - `src/handlers/mod.rs`: handler module declarations and re-exports
+- `src/handlers/parse.rs`: EIS package parse handler, `extract_and_pretty_print` core logic, and unit tests
 - `src/handlers/validate.rs`: XSD validation handler, `run_validation` core logic, and unit tests
 - `src/middleware/mod.rs`: middleware layers
 - `src/error.rs`: application error type and HTTP response mapping
@@ -49,6 +54,17 @@
 ## API Surface
 
 - `GET /health` returns `{"status":"ok","timestamp":"<ms>"}`.
+- `POST /parse` accepts a `multipart/form-data` request with a single EIS package XML file field (a Windows-1251 encoded SOAP envelope). Extracts the Base64-encoded XML payloads from `Документ/Контент` and `Прилож/Контент`, decodes them, and returns both as pretty-printed UTF-8 XML strings:
+
+```json
+{
+  "document": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n  ...\n</root>",
+  "attachment": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n  ...\n</root>"
+}
+```
+
+Returns `200 OK` on success. Returns `400 Bad Request` if no file field is present, if either `Документ/Контент` or `Прилож/Контент` is missing, or if the Base64 content is invalid.
+
 - `POST /validate` accepts a `multipart/form-data` request with a single XML file field. Validates the file against `schemas/DP_PAKET_EIS_01_00.xsd` and returns:
 
 ```json
