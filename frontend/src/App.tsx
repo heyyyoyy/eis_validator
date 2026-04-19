@@ -1,21 +1,31 @@
 import { useState } from "react";
-import { parseEisPackage, type ParseResponse } from "./api";
+import {
+  parseEisPackage,
+  validateAttachment,
+  type ParseResponse,
+  type ValidationError,
+  type ValidationResponse,
+} from "./api";
 import { FileUpload } from "./components/FileUpload";
 import { XmlPanel } from "./components/XmlPanel";
 import { StatusBanner } from "./components/StatusBanner";
+import { ValidationPanel } from "./components/ValidationPanel";
 
 type AppState =
   | { status: "idle" }
   | { status: "ready"; file: File }
   | { status: "loading"; file: File }
-  | { status: "success"; file: File; result: ParseResponse }
+  | { status: "success"; file: File; result: ParseResponse; validation: ValidationResponse | null; validating: boolean }
   | { status: "error"; file: File; message: string };
 
 export function App() {
   const [state, setState] = useState<AppState>({ status: "idle" });
+  // active error index for two-way sync between XmlPanel and ValidationPanel
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
 
   const handleFileSelect = (file: File) => {
     setState({ status: "ready", file });
+    setActiveIdx(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -24,10 +34,29 @@ export function App() {
 
     const file = state.file;
     setState({ status: "loading", file });
+    setActiveIdx(null);
 
     try {
       const result = await parseEisPackage(file);
-      setState({ status: "success", file, result });
+
+      // Show parse results immediately, start validation in parallel
+      setState({ status: "success", file, result, validation: null, validating: true });
+
+      try {
+        const validation = await validateAttachment(result.attachment);
+        setState((prev) =>
+          prev.status === "success"
+            ? { ...prev, validation, validating: false }
+            : prev,
+        );
+      } catch {
+        // Validation failure is non-fatal — show parse results without validation
+        setState((prev) =>
+          prev.status === "success"
+            ? { ...prev, validating: false }
+            : prev,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "An unexpected error occurred.";
       setState({ status: "error", file, message });
@@ -38,9 +67,32 @@ export function App() {
   const isLoading = state.status === "loading";
   const canSubmit = hasFile && !isLoading;
 
+  // Build errorLines map from validation response (1-based line → ValidationError)
+  const errorLines = (() => {
+    if (state.status !== "success" || state.validation == null) return undefined;
+    const map = new Map<number, ValidationError>();
+    for (const err of state.validation.errors) {
+      if (err.line != null) map.set(err.line, err);
+    }
+    return map;
+  })();
+
+  // Active error line (from active error index)
+  const activeErrorLine = (() => {
+    if (activeIdx == null || state.status !== "success" || state.validation == null) return null;
+    return state.validation.errors[activeIdx]?.line ?? null;
+  })();
+
+  // Clicking a highlighted line → find matching error index
+  const handleLineClick = (line: number) => {
+    if (state.status !== "success" || state.validation == null) return;
+    const idx = state.validation.errors.findIndex((e) => e.line === line);
+    if (idx !== -1) setActiveIdx(idx);
+  };
+
   return (
     <div style={{ minHeight: "100vh", padding: "2rem" }}>
-      <div style={{ maxWidth: "860px", margin: "0 auto" }}>
+      <div style={{ maxWidth: "1100px", margin: "0 auto" }}>
 
         {/* Header */}
         <header style={{ display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "2.5rem" }}>
@@ -174,14 +226,43 @@ export function App() {
               parsed successfully · {state.file.name}
             </div>
 
+            {/* Document panel — full width */}
             <XmlPanel label="document" content={state.result.document} />
-            <XmlPanel label="attachment" content={state.result.attachment} />
+
+            {/* Attachment + validation — two-column layout */}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: state.validation != null || state.validating ? "1fr 320px" : "1fr",
+              gap: "1.25rem",
+              alignItems: "start",
+            }}>
+              <XmlPanel
+                label="attachment"
+                content={state.result.attachment}
+                errorLines={errorLines}
+                activeErrorLine={activeErrorLine}
+                onLineClick={handleLineClick}
+              />
+
+              {(state.validation != null || state.validating) && (
+                <ValidationPanel
+                  response={state.validation}
+                  validating={state.validating}
+                  activeIdx={activeIdx}
+                  onActivate={(idx) => setActiveIdx(idx === activeIdx ? null : idx)}
+                />
+              )}
+            </div>
           </div>
         )}
       </div>
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes errFadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
       `}</style>
     </div>
   );

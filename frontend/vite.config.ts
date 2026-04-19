@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/parse": "http://localhost:3000",
+      "/validate": "http://localhost:3000",
     },
   },
 });

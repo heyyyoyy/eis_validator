@@ -1,8 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import type { ValidationError } from "../api";
 
 interface XmlPanelProps {
   label: string;
   content: string;
+  errorLines?: Map<number, ValidationError>;
+  activeErrorLine?: number | null;
+  onLineClick?: (line: number) => void;
 }
 
 type CopyState = "idle" | "copied" | "error";
@@ -64,9 +68,7 @@ function tokenize(xml: string): Token[] {
 
     // Opening/closing tag  < ... >
     if (xml[i] === "<") {
-      // find matching >
       let j = i + 1;
-      // skip past any quoted strings inside the tag
       while (j < xml.length && xml[j] !== ">") {
         if (xml[j] === '"') {
           j++;
@@ -80,7 +82,7 @@ function tokenize(xml: string): Token[] {
           j++;
         }
       }
-      const raw = xml.slice(i, j + 1); // includes >
+      const raw = xml.slice(i, j + 1);
       i = j + 1;
       tokenizeTag(raw, tokens);
       continue;
@@ -97,7 +99,6 @@ function tokenize(xml: string): Token[] {
 }
 
 function tokenizeTag(raw: string, out: Token[]) {
-  // self-close or close bracket characters
   const isClose = raw.startsWith("</");
   const selfClose = raw.endsWith("/>");
 
@@ -105,13 +106,10 @@ function tokenizeTag(raw: string, out: Token[]) {
     if (value) out.push({ kind, value });
   }
 
-  // opening <  or  </
   push("tag-open", isClose ? "</" : "<");
 
-  // strip < </ > />
   let inner = raw.slice(isClose ? 2 : 1, selfClose ? raw.length - 2 : raw.length - 1);
 
-  // tag name (first token before whitespace or /)
   const nameMatch = inner.match(/^[^\s/>=]+/);
   if (!nameMatch) {
     push("tag-open", inner + (selfClose ? "/>" : ">"));
@@ -120,33 +118,26 @@ function tokenizeTag(raw: string, out: Token[]) {
   push("tag-name", nameMatch[0]);
   inner = inner.slice(nameMatch[0].length);
 
-  // attributes
   let k = 0;
   while (k < inner.length) {
-    // skip whitespace
     const wsMatch = inner.slice(k).match(/^\s+/);
     if (wsMatch) { push("text", wsMatch[0]); k += wsMatch[0].length; continue; }
 
-    // attr-name
     const attrMatch = inner.slice(k).match(/^[^\s=/>]+/);
     if (!attrMatch) { k++; continue; }
     push("attr-name", attrMatch[0]);
     k += attrMatch[0].length;
 
-    // skip whitespace
     const ws2 = inner.slice(k).match(/^\s*/);
     if (ws2?.[0]) { push("text", ws2[0]); k += ws2[0].length; }
 
-    // =
     if (inner[k] === "=") {
       push("attr-eq", "=");
       k++;
 
-      // skip whitespace
       const ws3 = inner.slice(k).match(/^\s*/);
       if (ws3?.[0]) { push("text", ws3[0]); k += ws3[0].length; }
 
-      // quoted value
       const q = inner[k];
       if (q === '"' || q === "'") {
         const valEnd = inner.indexOf(q, k + 1);
@@ -167,16 +158,16 @@ function tokenizeTag(raw: string, out: Token[]) {
 // ── Colour map ───────────────────────────────────────────────────────────────
 
 const TOKEN_COLORS: Record<TokenKind, string> = {
-  decl:      "#6b7491",   // var(--text-dim) — muted declaration
-  comment:   "#4a5068",   // var(--muted)
-  "tag-open":"#79b8ff",   // bracket / slash in blue
-  "tag-name":"#79b8ff",   // element name in blue
-  "attr-name":"#ffcf6b",  // attribute name in warm yellow
-  "attr-eq": "#c8cfdf",   // = in default text
-  "attr-val":"#9ecbff",   // attribute value in light blue
-  text:      "#c8cfdf",   // var(--text)
-  cdata:     "#6b7491",
-  plain:     "#c8cfdf",
+  decl:       "#6b7491",
+  comment:    "#4a5068",
+  "tag-open": "#79b8ff",
+  "tag-name": "#79b8ff",
+  "attr-name":"#ffcf6b",
+  "attr-eq":  "#c8cfdf",
+  "attr-val": "#9ecbff",
+  text:       "#c8cfdf",
+  cdata:      "#6b7491",
+  plain:      "#c8cfdf",
 };
 
 function HighlightedLine({ line }: { line: string }) {
@@ -193,10 +184,64 @@ function HighlightedLine({ line }: { line: string }) {
   );
 }
 
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// ── Inline error icon with hover tooltip ────────────────────────────────────
+
+function ErrorIcon({ err }: { err: ValidationError }) {
+  const isWarn = err.level.toLowerCase() === "warning";
+  const color = isWarn ? "var(--warn)" : "var(--err)";
+  const msg = err.message != null ? truncate(err.message, 80) : err.level;
+
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      marginLeft: "0.5rem",
+      cursor: "pointer",
+      position: "relative",
+      verticalAlign: "middle",
+    }}
+      className="err-icon-wrap"
+    >
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ display: "block", flexShrink: 0 }}>
+        <circle cx="7" cy="7" r="6.5" stroke={color} />
+        <line x1="7" y1="4" x2="7" y2="8" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+        <circle cx="7" cy="10" r="0.75" fill={color} />
+      </svg>
+      <span style={{
+        display: "none",
+        position: "absolute",
+        left: "1.5rem",
+        top: "-0.25rem",
+        background: "#1c1f2e",
+        border: `1px solid ${color}`,
+        borderRadius: "6px",
+        padding: "0.45rem 0.75rem",
+        fontSize: "0.72rem",
+        whiteSpace: "nowrap",
+        color: isWarn ? "#ffe0b0" : "#ffd0d8",
+        zIndex: 10,
+        pointerEvents: "none",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+        fontFamily: "'JetBrains Mono', monospace",
+      }}
+        className="err-tooltip"
+      >
+        {msg}
+      </span>
+    </span>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function XmlPanel({ label, content }: XmlPanelProps) {
+export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineClick }: XmlPanelProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
+  const codeRef = useRef<HTMLPreElement>(null);
+  const lineNumRef = useRef<HTMLDivElement>(null);
 
   const handleCopy = async () => {
     try {
@@ -210,6 +255,25 @@ export function XmlPanel({ label, content }: XmlPanelProps) {
   };
 
   const lines = content.split("\n");
+
+  const hasErrors = errorLines != null && errorLines.size > 0;
+  const errorCount = errorLines != null ? [...errorLines.values()].filter((e) => e.level.toLowerCase() === "error").length : 0;
+  const warnCount = errorLines != null ? [...errorLines.values()].filter((e) => e.level.toLowerCase() === "warning").length : 0;
+  const allValid = errorLines != null && errorLines.size === 0;
+
+  // Sync scroll between line numbers and code pane
+  const handleCodeScroll = () => {
+    if (codeRef.current && lineNumRef.current) {
+      lineNumRef.current.scrollTop = codeRef.current.scrollTop;
+    }
+  };
+
+  // Scroll active line into view
+  useEffect(() => {
+    if (activeErrorLine == null || !codeRef.current) return;
+    const lineEl = codeRef.current.querySelector(`[data-line="${activeErrorLine}"]`);
+    if (lineEl) lineEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeErrorLine]);
 
   return (
     <section style={{
@@ -310,42 +374,160 @@ export function XmlPanel({ label, content }: XmlPanelProps) {
         background: "rgba(0,0,0,0.2)",
       }}>
         {/* Line numbers column */}
-        <div style={{
-          padding: "1rem 0.75rem 1rem 1rem",
-          color: "var(--muted)",
-          userSelect: "none",
-          textAlign: "right",
-          minWidth: "3rem",
-          borderRight: "1px solid var(--border)",
-          background: "rgba(0,0,0,0.15)",
-          flexShrink: 0,
-          overflowY: "hidden",
-        }}>
-          {lines.map((_, i) => (
-            <span key={i} style={{ display: "block", height: "1.6rem" }}>
-              {i + 1}
-            </span>
-          ))}
+        <div
+          ref={lineNumRef}
+          style={{
+            padding: "1rem 0.75rem 1rem 1rem",
+            userSelect: "none",
+            textAlign: "right",
+            minWidth: "3rem",
+            borderRight: "1px solid var(--border)",
+            background: "rgba(0,0,0,0.15)",
+            flexShrink: 0,
+            overflowY: "hidden",
+          }}
+        >
+          {lines.map((_, i) => {
+            const lineNum = i + 1;
+            const err = errorLines?.get(lineNum);
+            const isErr = err && err.level.toLowerCase() === "error";
+            const isWarn = err && err.level.toLowerCase() === "warning";
+            const isActive = activeErrorLine === lineNum;
+            return (
+              <span
+                key={i}
+                style={{
+                  display: "block",
+                  height: "1.6rem",
+                  color: isActive
+                    ? "var(--accent)"
+                    : isErr
+                      ? "var(--err)"
+                      : isWarn
+                        ? "var(--warn)"
+                        : "var(--muted)",
+                  transition: "color 0.15s",
+                  cursor: err ? "pointer" : "default",
+                }}
+                onClick={() => { if (err) onLineClick?.(lineNum); }}
+              >
+                {lineNum}
+              </span>
+            );
+          })}
         </div>
 
         {/* Highlighted code */}
-        <pre style={{
-          margin: 0,
-          padding: "1rem 1.25rem",
-          flex: 1,
-          overflowX: "auto",
-          overflowY: "auto",
-          whiteSpace: "pre",
-        }}>
+        <pre
+          ref={codeRef}
+          onScroll={handleCodeScroll}
+          style={{
+            margin: 0,
+            padding: "1rem 0",
+            flex: 1,
+            overflowX: "auto",
+            overflowY: "auto",
+            whiteSpace: "pre",
+          }}
+        >
           <code>
-            {lines.map((line, i) => (
-              <div key={i} style={{ minHeight: "1.6rem" }}>
-                <HighlightedLine line={line} />
-              </div>
-            ))}
+            {lines.map((line, i) => {
+              const lineNum = i + 1;
+              const err = errorLines?.get(lineNum);
+              const isErr = err && err.level.toLowerCase() === "error";
+              const isWarn = err && err.level.toLowerCase() === "warning";
+              const isActive = activeErrorLine === lineNum;
+
+              let bg = "transparent";
+              let borderLeft = "2px solid transparent";
+              let paddingLeft = "1.25rem";
+
+              if (isActive) {
+                bg = "rgba(232,255,90,0.06)";
+                borderLeft = "2px solid var(--accent)";
+                paddingLeft = "calc(1.25rem - 2px)";
+              } else if (isErr) {
+                bg = "rgba(255,77,109,0.10)";
+                borderLeft = "2px solid var(--err)";
+                paddingLeft = "calc(1.25rem - 2px)";
+              } else if (isWarn) {
+                bg = "rgba(255,179,71,0.08)";
+                borderLeft = "2px solid var(--warn)";
+                paddingLeft = "calc(1.25rem - 2px)";
+              }
+
+              return (
+                <div
+                  key={i}
+                  data-line={lineNum}
+                  onClick={() => { if (err) onLineClick?.(lineNum); }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    minHeight: "1.6rem",
+                    paddingLeft,
+                    paddingRight: "1.25rem",
+                    background: bg,
+                    borderLeft,
+                    cursor: err ? "pointer" : "default",
+                    transition: "background 0.15s",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <span style={{ flex: 1 }}>
+                    <HighlightedLine line={line} />
+                  </span>
+                  {err && <ErrorIcon err={err} />}
+                </div>
+              );
+            })}
           </code>
         </pre>
       </div>
+
+      {/* Status bar — only shown when errorLines is provided */}
+      {errorLines != null && (
+        <div style={{
+          padding: "0.6rem 1rem",
+          borderTop: "1px solid var(--border)",
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: "0.68rem",
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          color: "var(--text-dim)",
+        }}>
+          {allValid ? (
+            <>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: "var(--ok)",
+                boxShadow: "0 0 8px var(--ok)",
+                display: "inline-block",
+              }} />
+              schema valid
+            </>
+          ) : (
+            <>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: "var(--err)",
+                boxShadow: "0 0 8px var(--err)",
+                display: "inline-block",
+              }} />
+              {hasErrors
+                ? `validation failed · ${errorCount} error${errorCount !== 1 ? "s" : ""}${warnCount > 0 ? ` · ${warnCount} warning${warnCount !== 1 ? "s" : ""}` : ""}`
+                : `${warnCount} warning${warnCount !== 1 ? "s" : ""}`
+              }
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Tooltip hover CSS */}
+      <style>{`
+        .err-icon-wrap:hover .err-tooltip { display: block !important; }
+      `}</style>
     </section>
   );
 }
