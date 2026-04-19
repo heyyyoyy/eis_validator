@@ -145,7 +145,11 @@ mod tests {
         let mut tmp = NamedTempFile::new().expect("failed to create temp file");
         tmp.write_all(xml).expect("failed to write xml");
         tmp.flush().expect("failed to flush");
-        let path = tmp.path().to_str().expect("temp path not UTF-8").to_string();
+        let path = tmp
+            .path()
+            .to_str()
+            .expect("temp path not UTF-8")
+            .to_string();
         run_validation(&path, &schema_path())
     }
 
