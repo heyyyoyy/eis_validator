@@ -6,6 +6,22 @@ import {
   type ValidationError,
   type ValidationResponse,
 } from "./api";
+
+// ── Helpers for missing element/attribute detection ──────────────────────────
+
+export function isMissingError(err: ValidationError): boolean {
+  if (err.message == null) return false;
+  return /Missing child element|required but missing/i.test(err.message);
+}
+
+export function extractMissingName(err: ValidationError): string | null {
+  if (err.message == null) return null;
+  const childMatch = err.message.match(/Expected is \(\s*([^\s)]+)\s*\)/);
+  if (childMatch) return childMatch[1];
+  const attrMatch = err.message.match(/attribute '([^']+)' is required but missing/i);
+  if (attrMatch) return `@${attrMatch[1]}`;
+  return null;
+}
 import { FileUpload } from "./components/FileUpload";
 import { XmlPanel } from "./components/XmlPanel";
 import { StatusBanner } from "./components/StatusBanner";
@@ -67,28 +83,65 @@ export function App() {
   const isLoading = state.status === "loading";
   const canSubmit = hasFile && !isLoading;
 
-  // Build errorLines map from validation response (1-based line → ValidationError)
+  // Build errorLines map (1-based line → ValidationError) — excludes missing errors
+  // since those get ghost rows instead of inline highlights.
+  // Ghost row logic: missing errors are reported on the closing-tag line of the parent.
+  // We insert the ghost row at (reportedLine - 1), i.e. before the closing tag.
   const errorLines = (() => {
     if (state.status !== "success" || state.validation == null) return undefined;
     const map = new Map<number, ValidationError>();
     for (const err of state.validation.errors) {
-      if (err.line != null) map.set(err.line, err);
+      if (err.line != null && !isMissingError(err)) {
+        map.set(err.line, err);
+      }
     }
     return map;
   })();
 
-  // Active error line (from active error index)
+  // Ghost rows: Map<insertAfterLine, {err, idx}> — ghost inserted after this real line
+  const ghostRows = (() => {
+    if (state.status !== "success" || state.validation == null) return undefined;
+    const map = new Map<number, { err: ValidationError; idx: number }>();
+    state.validation.errors.forEach((err, idx) => {
+      if (isMissingError(err) && err.line != null) {
+        // libxml reports on the closing tag line; insert ghost before it (after line - 1)
+        const insertAfter = Math.max(1, err.line - 1);
+        map.set(insertAfter, { err, idx });
+      }
+    });
+    return map;
+  })();
+
+  // Active error line (from active error index). Missing errors have no real line highlight.
   const activeErrorLine = (() => {
     if (activeIdx == null || state.status !== "success" || state.validation == null) return null;
-    return state.validation.errors[activeIdx]?.line ?? null;
+    const err = state.validation.errors[activeIdx];
+    if (err == null || isMissingError(err)) return null;
+    return err.line ?? null;
+  })();
+
+  // Active ghost row: which "insertAfterLine" is active
+  const activeGhostLine = (() => {
+    if (activeIdx == null || state.status !== "success" || state.validation == null) return null;
+    const err = state.validation.errors[activeIdx];
+    if (err == null || !isMissingError(err) || err.line == null) return null;
+    return Math.max(1, err.line - 1);
   })();
 
   // Clicking a highlighted line → find matching error index
   const handleLineClick = (line: number) => {
     if (state.status !== "success" || state.validation == null) return;
-    const idx = state.validation.errors.findIndex((e) => e.line === line);
+    const idx = state.validation.errors.findIndex((e) => e.line === line && !isMissingError(e));
     if (idx !== -1) setActiveIdx(idx);
   };
+
+  // Clicking a ghost row → activate the corresponding error index
+  const handleGhostClick = (insertAfterLine: number) => {
+    const entry = ghostRows?.get(insertAfterLine);
+    if (entry == null) return;
+    setActiveIdx(entry.idx === activeIdx ? null : entry.idx);
+  };
+
 
   return (
     <div style={{ minHeight: "100vh", padding: "2rem" }}>
@@ -240,8 +293,11 @@ export function App() {
                 label="attachment"
                 content={state.result.attachment}
                 errorLines={errorLines}
+                ghostRows={ghostRows}
                 activeErrorLine={activeErrorLine}
+                activeGhostLine={activeGhostLine}
                 onLineClick={handleLineClick}
+                onGhostClick={handleGhostClick}
               />
 
               {(state.validation != null || state.validating) && (

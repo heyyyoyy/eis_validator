@@ -1,12 +1,21 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import type { ValidationError } from "../api";
+import { extractMissingName } from "../App";
+
+interface GhostEntry {
+  err: ValidationError;
+  idx: number;
+}
 
 interface XmlPanelProps {
   label: string;
   content: string;
   errorLines?: Map<number, ValidationError>;
+  ghostRows?: Map<number, GhostEntry>;  // insertAfterLine → { err, idx }
   activeErrorLine?: number | null;
+  activeGhostLine?: number | null;      // insertAfterLine of the active ghost row
   onLineClick?: (line: number) => void;
+  onGhostClick?: (insertAfterLine: number) => void;
 }
 
 type CopyState = "idle" | "copied" | "error";
@@ -236,9 +245,81 @@ function ErrorIcon({ err }: { err: ValidationError }) {
   );
 }
 
+// ── Ghost row ────────────────────────────────────────────────────────────────
+
+interface GhostRowProps {
+  err: ValidationError;
+  indent: string;
+  isActive: boolean;
+  insertAfterLine: number;
+  onGhostClick?: (insertAfterLine: number) => void;
+}
+
+function GhostRow({ err, indent, isActive, insertAfterLine, onGhostClick }: GhostRowProps) {
+  const missingName = extractMissingName(err);
+  const label = missingName ?? "…";
+  const isAttr = label.startsWith("@");
+
+  const ghostText = isAttr
+    ? `${indent}${label}="…"`
+    : `${indent}<${label}>…</${label}>`;
+
+  return (
+    <div
+      data-ghost-after={insertAfterLine}
+      role="button"
+      tabIndex={0}
+      onClick={() => onGhostClick?.(insertAfterLine)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onGhostClick?.(insertAfterLine); } }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        minHeight: "1.6rem",
+        paddingLeft: "calc(1.25rem - 2px)",
+        paddingRight: "1.25rem",
+        borderLeft: isActive ? "2px dashed var(--accent)" : "2px dashed var(--err)",
+        background: isActive
+          ? "rgba(232,255,90,0.06)"
+          : "repeating-linear-gradient(-45deg, rgba(255,77,109,0.04), rgba(255,77,109,0.04) 4px, transparent 4px, transparent 10px)",
+        cursor: "pointer",
+        transition: "background 0.15s",
+        boxSizing: "border-box",
+        outline: "none",
+      }}
+    >
+      <span style={{
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: "0.8rem",
+        color: isActive ? "rgba(232,255,90,0.7)" : "rgba(255,77,109,0.55)",
+        fontStyle: "italic",
+        flex: 1,
+        whiteSpace: "pre",
+      }}>
+        {ghostText}
+      </span>
+      <span style={{
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: "0.6rem",
+        fontWeight: 700,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        color: "var(--err)",
+        background: "rgba(255,77,109,0.12)",
+        border: "1px dashed rgba(255,77,109,0.35)",
+        padding: "1px 6px",
+        borderRadius: "3px",
+        marginLeft: "0.75rem",
+        flexShrink: 0,
+      }}>
+        missing
+      </span>
+    </div>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineClick }: XmlPanelProps) {
+export function XmlPanel({ label, content, errorLines, ghostRows, activeErrorLine, activeGhostLine, onLineClick, onGhostClick }: XmlPanelProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const codeRef = useRef<HTMLPreElement>(null);
   const lineNumRef = useRef<HTMLDivElement>(null);
@@ -256,10 +337,11 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
 
   const lines = content.split("\n");
 
-  const hasErrors = errorLines != null && errorLines.size > 0;
-  const errorCount = errorLines != null ? [...errorLines.values()].filter((e) => e.level.toLowerCase() === "error").length : 0;
+  const ghostCount = ghostRows?.size ?? 0;
+  const hasErrors = (errorLines != null && errorLines.size > 0) || ghostCount > 0;
+  const errorCount = (errorLines != null ? [...errorLines.values()].filter((e) => e.level.toLowerCase() === "error").length : 0) + ghostCount;
   const warnCount = errorLines != null ? [...errorLines.values()].filter((e) => e.level.toLowerCase() === "warning").length : 0;
-  const allValid = errorLines != null && errorLines.size === 0;
+  const allValid = errorLines != null && errorLines.size === 0 && ghostCount === 0;
 
   // Sync scroll between line numbers and code pane
   const handleCodeScroll = () => {
@@ -268,12 +350,17 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
     }
   };
 
-  // Scroll active line into view
+  // Scroll active line or ghost into view
   useEffect(() => {
-    if (activeErrorLine == null || !codeRef.current) return;
-    const lineEl = codeRef.current.querySelector(`[data-line="${activeErrorLine}"]`);
-    if (lineEl) lineEl.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeErrorLine]);
+    if (!codeRef.current) return;
+    if (activeErrorLine != null) {
+      const lineEl = codeRef.current.querySelector(`[data-line="${activeErrorLine}"]`);
+      if (lineEl) lineEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else if (activeGhostLine != null) {
+      const ghostEl = codeRef.current.querySelector(`[data-ghost-after="${activeGhostLine}"]`);
+      if (ghostEl) ghostEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [activeErrorLine, activeGhostLine]);
 
   return (
     <section style={{
@@ -369,7 +456,7 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: "0.8rem",
         lineHeight: "1.6rem",
-        maxHeight: "50vh",
+        maxHeight: "75vh",
         overflow: "hidden",
         background: "rgba(0,0,0,0.2)",
       }}>
@@ -393,25 +480,44 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
             const isErr = err && err.level.toLowerCase() === "error";
             const isWarn = err && err.level.toLowerCase() === "warning";
             const isActive = activeErrorLine === lineNum;
+            const hasGhost = ghostRows?.has(lineNum);
+            const isGhostActive = activeGhostLine === lineNum;
             return (
-              <span
-                key={i}
-                style={{
-                  display: "block",
-                  height: "1.6rem",
-                  color: isActive
-                    ? "var(--accent)"
-                    : isErr
-                      ? "var(--err)"
-                      : isWarn
-                        ? "var(--warn)"
-                        : "var(--muted)",
-                  transition: "color 0.15s",
-                  cursor: err ? "pointer" : "default",
-                }}
-                onClick={() => { if (err) onLineClick?.(lineNum); }}
-              >
-                {lineNum}
+              <span key={i}>
+                <span
+                  style={{
+                    display: "block",
+                    height: "1.6rem",
+                    color: isActive
+                      ? "var(--accent)"
+                      : isErr
+                        ? "var(--err)"
+                        : isWarn
+                          ? "var(--warn)"
+                          : "var(--muted)",
+                    transition: "color 0.15s",
+                    cursor: err ? "pointer" : "default",
+                  }}
+                  onClick={() => { if (err) onLineClick?.(lineNum); }}
+                >
+                  {lineNum}
+                </span>
+                {hasGhost && (
+                  <span
+                    style={{
+                      display: "block",
+                      height: "1.6rem",
+                      color: isGhostActive ? "var(--accent)" : "rgba(255,77,109,0.4)",
+                      fontStyle: "italic",
+                      fontSize: "0.7rem",
+                      cursor: "pointer",
+                      transition: "color 0.15s",
+                    }}
+                    onClick={() => onGhostClick?.(lineNum)}
+                  >
+                    ?
+                  </span>
+                )}
               </span>
             );
           })}
@@ -437,6 +543,9 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
               const isErr = err && err.level.toLowerCase() === "error";
               const isWarn = err && err.level.toLowerCase() === "warning";
               const isActive = activeErrorLine === lineNum;
+              const ghostEntry = ghostRows?.get(lineNum);
+              const hasGhost = ghostEntry != null;
+              const isGhostActive = activeGhostLine === lineNum;
 
               let bg = "transparent";
               let borderLeft = "2px solid transparent";
@@ -456,29 +565,44 @@ export function XmlPanel({ label, content, errorLines, activeErrorLine, onLineCl
                 paddingLeft = "calc(1.25rem - 2px)";
               }
 
+              // Derive the indent of the current line (used for ghost placeholder text)
+              const lineIndent = line.match(/^(\s*)/)?.[1] ?? "";
+
               return (
-                <div
-                  key={i}
-                  data-line={lineNum}
-                  onClick={() => { if (err) onLineClick?.(lineNum); }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    minHeight: "1.6rem",
-                    paddingLeft,
-                    paddingRight: "1.25rem",
-                    background: bg,
-                    borderLeft,
-                    cursor: err ? "pointer" : "default",
-                    transition: "background 0.15s",
-                    boxSizing: "border-box",
-                  }}
-                >
-                  <span style={{ flex: 1 }}>
-                    <HighlightedLine line={line} />
-                  </span>
-                  {err && <ErrorIcon err={err} />}
-                </div>
+                <span key={i}>
+                  <div
+                    data-line={lineNum}
+                    onClick={() => { if (err) onLineClick?.(lineNum); }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      minHeight: "1.6rem",
+                      paddingLeft,
+                      paddingRight: "1.25rem",
+                      background: bg,
+                      borderLeft,
+                      cursor: err ? "pointer" : "default",
+                      transition: "background 0.15s",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>
+                      <HighlightedLine line={line} />
+                    </span>
+                    {err && <ErrorIcon err={err} />}
+                  </div>
+
+                  {/* Ghost row inserted after this line */}
+                  {hasGhost && ghostEntry && (
+                    <GhostRow
+                      err={ghostEntry.err}
+                      indent={lineIndent + "  "}
+                      isActive={isGhostActive}
+                      insertAfterLine={lineNum}
+                      onGhostClick={onGhostClick}
+                    />
+                  )}
+                </span>
               );
             })}
           </code>

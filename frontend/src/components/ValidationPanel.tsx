@@ -1,4 +1,5 @@
 import type { ValidationError, ValidationResponse } from "../api";
+import { isMissingError, extractMissingName } from "../App";
 
 interface ValidationPanelProps {
   response: ValidationResponse | null;
@@ -25,7 +26,7 @@ export function ValidationPanel({ response, validating, activeIdx, onActivate }:
       overflow: "hidden",
       display: "flex",
       flexDirection: "column",
-      minHeight: 0,
+      maxHeight: "75vh",
     }}>
       {/* Panel title bar */}
       <div style={{
@@ -155,9 +156,16 @@ interface ErrorItemProps {
 }
 
 function ErrorItem({ err, idx, isError, isActive, onActivate }: ErrorItemProps) {
-  const levelColor = isError ? "var(--err)" : "var(--warn)";
-  const levelBg = isError ? "rgba(255,77,109,0.15)" : "rgba(255,179,71,0.15)";
-  const dotShadow = isError ? "0 0 6px var(--err)" : "0 0 6px var(--warn)";
+  const isMissing = isMissingError(err);
+  const missingName = isMissing ? extractMissingName(err) : null;
+
+  const levelColor = isMissing ? "var(--err)" : isError ? "var(--err)" : "var(--warn)";
+  const levelBg = isMissing ? "rgba(255,77,109,0.12)" : isError ? "rgba(255,77,109,0.15)" : "rgba(255,179,71,0.15)";
+  const dotShadow = isMissing ? "none" : isError ? "0 0 6px var(--err)" : "0 0 6px var(--warn)";
+  const dotOpacity = isMissing ? 0.45 : 1;
+
+  // For missing errors, libxml reports on the closing tag line, so the ghost is before that
+  const insertAfterLine = isMissing && err.line != null ? Math.max(1, err.line - 1) : null;
 
   return (
     <div
@@ -193,16 +201,28 @@ function ErrorItem({ err, idx, isError, isActive, onActivate }: ErrorItemProps) 
         }
       }}
     >
-      {/* Level dot */}
-      <span style={{
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: levelColor,
-        boxShadow: dotShadow,
-        flexShrink: 0,
-        marginTop: 5,
-      }} />
+      {/* Level dot — dashed border for missing */}
+      {isMissing ? (
+        <span style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          border: "1.5px dashed var(--err)",
+          opacity: dotOpacity,
+          flexShrink: 0,
+          marginTop: 5,
+        }} />
+      ) : (
+        <span style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: levelColor,
+          boxShadow: dotShadow,
+          flexShrink: 0,
+          marginTop: 5,
+        }} />
+      )}
 
       {/* Body */}
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -212,14 +232,27 @@ function ErrorItem({ err, idx, isError, isActive, onActivate }: ErrorItemProps) 
           color: "var(--text-dim)",
           marginBottom: "0.2rem",
         }}>
-          {err.line != null
-            ? <>line <span style={{ color: "var(--accent)" }}>{err.line}</span>{err.column != null ? <> · col <span style={{ color: "var(--accent)" }}>{err.column}</span></> : null}</>
-            : "unknown location"
+          {isMissing && insertAfterLine != null
+            ? <>after line <span style={{ color: "var(--accent)" }}>{insertAfterLine}</span> · missing</>
+            : err.line != null
+              ? <>line <span style={{ color: "var(--accent)" }}>{err.line}</span>{err.column != null ? <> · col <span style={{ color: "var(--accent)" }}>{err.column}</span></> : null}</>
+              : "unknown location"
           }
         </div>
+        {missingName && (
+          <div style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: "0.7rem",
+            color: "rgba(255,77,109,0.7)",
+            fontStyle: "italic",
+            marginBottom: "0.2rem",
+          }}>
+            {missingName.startsWith("@") ? `${missingName}="…"` : `<${missingName}>…</${missingName}>`}
+          </div>
+        )}
         <div style={{
           fontSize: "0.75rem",
-          color: "var(--text)",
+          color: isMissing ? "var(--text-dim)" : "var(--text)",
           lineHeight: 1.4,
           wordBreak: "break-word",
         }}>
@@ -227,7 +260,7 @@ function ErrorItem({ err, idx, isError, isActive, onActivate }: ErrorItemProps) 
         </div>
       </div>
 
-      {/* Level badge */}
+      {/* Level / type badge */}
       <span style={{
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: "0.6rem",
@@ -240,8 +273,9 @@ function ErrorItem({ err, idx, isError, isActive, onActivate }: ErrorItemProps) 
         flexShrink: 0,
         background: levelBg,
         color: levelColor,
+        border: isMissing ? "1px dashed rgba(255,77,109,0.35)" : "none",
       }}>
-        {err.level}
+        {isMissing ? "missing" : err.level}
       </span>
     </div>
   );
