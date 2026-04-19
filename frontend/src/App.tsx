@@ -64,7 +64,7 @@ export function App() {
             letterSpacing: "0.08em",
             textTransform: "uppercase",
           }}>
-            parse
+            powered by rust
           </span>
         </header>
 

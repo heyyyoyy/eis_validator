@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 interface XmlPanelProps {
   label: string;
@@ -6,6 +6,194 @@ interface XmlPanelProps {
 }
 
 type CopyState = "idle" | "copied" | "error";
+
+// ── Lightweight XML syntax tokeniser ────────────────────────────────────────
+
+type TokenKind =
+  | "decl"       // <?xml ... ?>
+  | "comment"    // <!-- ... -->
+  | "tag-open"   // < or </ or >  or />
+  | "tag-name"   // element name
+  | "attr-name"  // attribute name
+  | "attr-eq"    // =
+  | "attr-val"   // "..." value
+  | "text"       // text content
+  | "cdata"      // <![CDATA[ ... ]]>
+  | "plain";     // fallback
+
+interface Token {
+  kind: TokenKind;
+  value: string;
+}
+
+function tokenize(xml: string): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+
+  function push(kind: TokenKind, value: string) {
+    if (value) tokens.push({ kind, value });
+  }
+
+  while (i < xml.length) {
+    // XML declaration  <?xml ... ?>
+    if (xml.startsWith("<?", i)) {
+      const end = xml.indexOf("?>", i + 2);
+      if (end === -1) { push("decl", xml.slice(i)); i = xml.length; continue; }
+      push("decl", xml.slice(i, end + 2));
+      i = end + 2;
+      continue;
+    }
+
+    // Comment  <!-- ... -->
+    if (xml.startsWith("<!--", i)) {
+      const end = xml.indexOf("-->", i + 4);
+      if (end === -1) { push("comment", xml.slice(i)); i = xml.length; continue; }
+      push("comment", xml.slice(i, end + 3));
+      i = end + 3;
+      continue;
+    }
+
+    // CDATA  <![CDATA[ ... ]]>
+    if (xml.startsWith("<![CDATA[", i)) {
+      const end = xml.indexOf("]]>", i + 9);
+      if (end === -1) { push("cdata", xml.slice(i)); i = xml.length; continue; }
+      push("cdata", xml.slice(i, end + 3));
+      i = end + 3;
+      continue;
+    }
+
+    // Opening/closing tag  < ... >
+    if (xml[i] === "<") {
+      // find matching >
+      let j = i + 1;
+      // skip past any quoted strings inside the tag
+      while (j < xml.length && xml[j] !== ">") {
+        if (xml[j] === '"') {
+          j++;
+          while (j < xml.length && xml[j] !== '"') j++;
+          if (j < xml.length) j++;
+        } else if (xml[j] === "'") {
+          j++;
+          while (j < xml.length && xml[j] !== "'") j++;
+          if (j < xml.length) j++;
+        } else {
+          j++;
+        }
+      }
+      const raw = xml.slice(i, j + 1); // includes >
+      i = j + 1;
+      tokenizeTag(raw, tokens);
+      continue;
+    }
+
+    // Text content — gather until next <
+    const nextTag = xml.indexOf("<", i);
+    const end = nextTag === -1 ? xml.length : nextTag;
+    push("text", xml.slice(i, end));
+    i = end;
+  }
+
+  return tokens;
+}
+
+function tokenizeTag(raw: string, out: Token[]) {
+  // self-close or close bracket characters
+  const isClose = raw.startsWith("</");
+  const selfClose = raw.endsWith("/>");
+
+  function push(kind: TokenKind, value: string) {
+    if (value) out.push({ kind, value });
+  }
+
+  // opening <  or  </
+  push("tag-open", isClose ? "</" : "<");
+
+  // strip < </ > />
+  let inner = raw.slice(isClose ? 2 : 1, selfClose ? raw.length - 2 : raw.length - 1);
+
+  // tag name (first token before whitespace or /)
+  const nameMatch = inner.match(/^[^\s/>=]+/);
+  if (!nameMatch) {
+    push("tag-open", inner + (selfClose ? "/>" : ">"));
+    return;
+  }
+  push("tag-name", nameMatch[0]);
+  inner = inner.slice(nameMatch[0].length);
+
+  // attributes
+  let k = 0;
+  while (k < inner.length) {
+    // skip whitespace
+    const wsMatch = inner.slice(k).match(/^\s+/);
+    if (wsMatch) { push("text", wsMatch[0]); k += wsMatch[0].length; continue; }
+
+    // attr-name
+    const attrMatch = inner.slice(k).match(/^[^\s=/>]+/);
+    if (!attrMatch) { k++; continue; }
+    push("attr-name", attrMatch[0]);
+    k += attrMatch[0].length;
+
+    // skip whitespace
+    const ws2 = inner.slice(k).match(/^\s*/);
+    if (ws2?.[0]) { push("text", ws2[0]); k += ws2[0].length; }
+
+    // =
+    if (inner[k] === "=") {
+      push("attr-eq", "=");
+      k++;
+
+      // skip whitespace
+      const ws3 = inner.slice(k).match(/^\s*/);
+      if (ws3?.[0]) { push("text", ws3[0]); k += ws3[0].length; }
+
+      // quoted value
+      const q = inner[k];
+      if (q === '"' || q === "'") {
+        const valEnd = inner.indexOf(q, k + 1);
+        if (valEnd !== -1) {
+          push("attr-val", inner.slice(k, valEnd + 1));
+          k = valEnd + 1;
+        } else {
+          push("attr-val", inner.slice(k));
+          k = inner.length;
+        }
+      }
+    }
+  }
+
+  push("tag-open", selfClose ? "/>" : ">");
+}
+
+// ── Colour map ───────────────────────────────────────────────────────────────
+
+const TOKEN_COLORS: Record<TokenKind, string> = {
+  decl:      "#6b7491",   // var(--text-dim) — muted declaration
+  comment:   "#4a5068",   // var(--muted)
+  "tag-open":"#79b8ff",   // bracket / slash in blue
+  "tag-name":"#79b8ff",   // element name in blue
+  "attr-name":"#ffcf6b",  // attribute name in warm yellow
+  "attr-eq": "#c8cfdf",   // = in default text
+  "attr-val":"#9ecbff",   // attribute value in light blue
+  text:      "#c8cfdf",   // var(--text)
+  cdata:     "#6b7491",
+  plain:     "#c8cfdf",
+};
+
+function HighlightedLine({ line }: { line: string }) {
+  const tokens = useMemo(() => tokenize(line), [line]);
+
+  return (
+    <>
+      {tokens.map((tok, i) => (
+        <span key={i} style={{ color: TOKEN_COLORS[tok.kind] }}>
+          {tok.value}
+        </span>
+      ))}
+    </>
+  );
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 export function XmlPanel({ label, content }: XmlPanelProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
@@ -140,17 +328,22 @@ export function XmlPanel({ label, content }: XmlPanelProps) {
           ))}
         </div>
 
-        {/* Code content */}
+        {/* Highlighted code */}
         <pre style={{
           margin: 0,
           padding: "1rem 1.25rem",
           flex: 1,
           overflowX: "auto",
           overflowY: "auto",
-          color: "var(--text)",
           whiteSpace: "pre",
         }}>
-          <code>{content}</code>
+          <code>
+            {lines.map((line, i) => (
+              <div key={i} style={{ minHeight: "1.6rem" }}>
+                <HighlightedLine line={line} />
+              </div>
+            ))}
+          </code>
         </pre>
       </div>
     </section>
