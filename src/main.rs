@@ -4,6 +4,7 @@ mod handlers;
 mod middleware;
 mod routes;
 
+use axum_server::tls_rustls::RustlsConfig;
 use config::AppConfig;
 use middleware::cors_layer;
 use routes::app_routes;
@@ -24,14 +25,28 @@ async fn main() {
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
-    tracing::info!("Starting server on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr)
+    let tls_config = RustlsConfig::from_pem_file(&config.tls_cert_path, &config.tls_key_path)
         .await
-        .expect("failed to bind to address");
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to load TLS certs ({} / {}): {e}\n\
+                 Run `cargo run --bin generate_certs` first.",
+                config.tls_cert_path, config.tls_key_path
+            )
+        });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+    tracing::info!("Starting HTTPS server on {}", addr);
+
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+    });
+
+    axum_server::bind_rustls(addr, tls_config)
+        .handle(handle)
+        .serve(app.into_make_service())
         .await
         .expect("server error");
 }
