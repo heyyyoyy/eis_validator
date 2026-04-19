@@ -1,9 +1,10 @@
-# Production overrides — apply with:
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+# Production — nginx + TLS (certs from one-shot cert-gen), resource limits.
+#   docker compose -f docker-compose.prod.yml up --build -d
+
+name: eis_validator
 
 services:
 
-  # ── One-shot cert generation ─────────────────────────────────────────────────
   cert-gen:
     image: alpine/openssl:latest
     volumes:
@@ -20,6 +21,23 @@ services:
     restart: "no"
 
   backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "${PORT:-3000}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    expose:
+      - "${PORT:-3000}"
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
     deploy:
       resources:
@@ -31,16 +49,21 @@ services:
           memory: 64M
 
   frontend:
-    restart: unless-stopped
-    volumes:
-      - certs:/etc/nginx/certs:ro
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    environment:
+      BACKEND_PORT: "${PORT:-3000}"
     depends_on:
       cert-gen:
         condition: service_completed_successfully
       backend:
         condition: service_healthy
-    # Host ports are read from HTTP_PORT / HTTPS_PORT in .env (or shell env).
-    # Defaults to 80 and 443 when not set.
+    networks:
+      - app-net
+    restart: unless-stopped
+    volumes:
+      - certs:/etc/nginx/certs:ro
     ports:
       - "${HTTP_PORT:-80}:8080"
       - "${HTTPS_PORT:-443}:8443"
@@ -61,6 +84,7 @@ services:
 
 networks:
   app-net:
+    driver: bridge
 
 volumes:
   certs:

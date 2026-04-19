@@ -1,0 +1,62 @@
+# Development — Vite dev server (HMR), source bind-mounts, debug logging.
+#   docker compose -f docker-compose.dev.yml up --build
+
+name: eis_validator
+
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "${PORT:-3000}"
+      LOG_LEVEL: debug
+      RUST_BACKTRACE: "1"
+    expose:
+      - "${PORT:-3000}"
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+      target: builder
+    working_dir: /app
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    environment:
+      BACKEND_PORT: "${PORT:-3000}"
+      VITE_PROXY_TARGET: "http://backend:${PORT:-3000}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app:cached
+      - npm-cache:/app/node_modules
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  npm-cache:
