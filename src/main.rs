@@ -4,7 +4,6 @@ mod handlers;
 mod middleware;
 mod routes;
 
-use axum_server::tls_rustls::RustlsConfig;
 use config::AppConfig;
 use middleware::cors_layer;
 use routes::app_routes;
@@ -12,9 +11,11 @@ use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() {
+    let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into());
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| log_level.as_str().into()),
         )
         .init();
 
@@ -25,43 +26,16 @@ async fn main() {
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
-    if config.use_tls {
-        let tls_config = RustlsConfig::from_pem_file(&config.tls_cert_path, &config.tls_key_path)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed to load TLS certs ({} / {}): {e}\n\
-                     Run `cargo run --bin generate_certs` first.",
-                    config.tls_cert_path, config.tls_key_path
-                )
-            });
+    tracing::info!("Starting HTTP server on {}", addr);
 
-        tracing::info!("Starting HTTPS server on {}", addr);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("failed to bind address");
 
-        let handle = axum_server::Handle::new();
-        let shutdown_handle = handle.clone();
-        tokio::spawn(async move {
-            shutdown_signal().await;
-            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
-        });
-
-        axum_server::bind_rustls(addr, tls_config)
-            .handle(handle)
-            .serve(app.into_make_service())
-            .await
-            .expect("server error");
-    } else {
-        tracing::info!("Starting HTTP server on {}", addr);
-
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("failed to bind address");
-
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .expect("server error");
-    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("server error");
 }
 
 async fn shutdown_signal() {

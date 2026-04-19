@@ -3,7 +3,20 @@
 
 services:
 
+  # ── One-shot cert generation ─────────────────────────────────────────────────
   cert-gen:
+    image: alpine/openssl:latest
+    volumes:
+      - certs:/certs
+      - ./docker/generate_certs.sh:/usr/local/bin/generate_certs.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/generate_certs.sh"]
+    environment:
+      CERTS_DIR: "${CERTS_DIR:-/certs}"
+      CERT_DAYS: "${CERT_DAYS:-365}"
+      CERT_SUBJECT: "${CERT_SUBJECT:-/CN=localhost}"
+      CERT_SAN: "${CERT_SAN:-DNS:localhost,DNS:frontend,IP:127.0.0.1}"
+    networks:
+      - app-net
     restart: "no"
 
   backend:
@@ -19,11 +32,24 @@ services:
 
   frontend:
     restart: unless-stopped
+    volumes:
+      - certs:/etc/nginx/certs:ro
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
     # Host ports are read from HTTP_PORT / HTTPS_PORT in .env (or shell env).
     # Defaults to 80 and 443 when not set.
     ports:
       - "${HTTP_PORT:-80}:8080"
       - "${HTTPS_PORT:-443}:8443"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -32,3 +58,9 @@ services:
         reservations:
           cpus: "0.1"
           memory: 16M
+
+networks:
+  app-net:
+
+volumes:
+  certs:

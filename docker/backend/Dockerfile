@@ -47,8 +47,7 @@ USER appuser
 
 ENV HOST=0.0.0.0 \
     PORT=3000 \
-    LOG_LEVEL=info \
-    USE_TLS=false
+    LOG_LEVEL=info
 
 EXPOSE 3000
 

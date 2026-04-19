@@ -17,7 +17,7 @@ FROM nginx:1.27-alpine AS runtime
 RUN rm /etc/nginx/conf.d/default.conf && \
     rm -rf /usr/share/nginx/html/*
 
-COPY docker/frontend/nginx.conf /etc/nginx/nginx.conf
+COPY docker/frontend/nginx.conf /etc/nginx/nginx.conf.template
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Create directories required by nginx when running as non-root
@@ -38,4 +38,6 @@ EXPOSE 8080 8443
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD wget -qO- --no-check-certificate https://localhost:8443/health || exit 1
 
-CMD ["nginx", "-g", "daemon off;"]
+ENV BACKEND_PORT=3000
+
+CMD ["/bin/sh", "-c", "envsubst '${BACKEND_PORT}' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf && nginx -c /tmp/nginx.conf -g 'daemon off;'"]

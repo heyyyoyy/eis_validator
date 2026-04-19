@@ -1,22 +1,15 @@
 # Development overrides — loaded automatically by `docker compose up`
-# The backend source is bind-mounted so you can rebuild without restarting the compose stack.
 # The frontend runs the Vite dev server for hot-module replacement.
 
 services:
 
-  cert-gen:
-    # Always regenerate certs on dev stack startup
-    entrypoint: ["/bin/sh", "-c", "rm -f /certs/cert.pem /certs/key.pem && /bin/sh /usr/local/bin/generate_certs.sh"]
-
   backend:
-    # Use the full runtime image (both stages); source is not bind-mounted in dev
-    # because the binary is baked in during `docker compose up --build`.
     environment:
       LOG_LEVEL: debug
       RUST_BACKTRACE: "1"
     # Expose backend directly for debugging / curl tests
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
 
   frontend:
     # Override to run Vite dev server instead of nginx
@@ -24,11 +17,19 @@ services:
       target: builder
     working_dir: /app
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    environment:
+      VITE_PROXY_TARGET: "http://backend:${PORT:-3000}"
     ports:
       - "5173:5173"
     volumes:
       - ./frontend:/app:cached
       - npm-cache:/app/node_modules
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   npm-cache:

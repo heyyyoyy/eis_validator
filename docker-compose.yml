@@ -2,22 +2,6 @@ name: eis_validator
 
 services:
 
-  # ── One-shot cert generation ─────────────────────────────────────────────────
-  cert-gen:
-    image: alpine/openssl:latest
-    volumes:
-      - certs:/certs
-      - ./docker/generate_certs.sh:/usr/local/bin/generate_certs.sh:ro
-    entrypoint: ["/bin/sh", "/usr/local/bin/generate_certs.sh"]
-    environment:
-      CERTS_DIR: /certs
-      CERT_DAYS: "365"
-      CERT_SUBJECT: /CN=localhost
-      CERT_SAN: "DNS:localhost,DNS:frontend,IP:127.0.0.1"
-    networks:
-      - app-net
-    restart: "no"
-
   # ── Rust/Axum backend ────────────────────────────────────────────────────────
   backend:
     build:
@@ -27,13 +11,12 @@ services:
       HOST: "0.0.0.0"
       PORT: "${PORT:-3000}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
-      USE_TLS: "false"
     expose:
-      - "3000"
+      - "${PORT:-3000}"
     networks:
       - app-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/health"]
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -44,25 +27,14 @@ services:
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
-    volumes:
-      - certs:/etc/nginx/certs:ro
+    environment:
+      BACKEND_PORT: "${PORT:-3000}"
     depends_on:
-      cert-gen:
-        condition: service_completed_successfully
       backend:
         condition: service_healthy
     networks:
       - app-net
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 15s
-      retries: 3
 
 networks:
   app-net:
     driver: bridge
-
-volumes:
-  certs:
