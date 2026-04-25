@@ -7,6 +7,9 @@ pub enum AppError {
     #[error("internal server error")]
     Internal(#[from] std::io::Error),
 
+    #[error("internal server error")]
+    InternalMsg(String),
+
     #[allow(dead_code)]
     #[error("not found: {0}")]
     NotFound(String),
@@ -17,15 +20,24 @@ pub enum AppError {
     #[allow(dead_code)]
     #[error("schema load error: {0}")]
     SchemaLoad(String),
+
+    #[error("service unavailable")]
+    ServiceUnavailable,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+            AppError::Internal(_) | AppError::InternalMsg(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.as_str()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
             AppError::SchemaLoad(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.as_str()),
+            AppError::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service temporarily unavailable",
+            ),
         };
 
         let body = serde_json::json!({

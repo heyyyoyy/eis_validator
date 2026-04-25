@@ -3,6 +3,7 @@ mod error;
 mod handlers;
 mod middleware;
 mod routes;
+mod state;
 
 use config::AppConfig;
 use middleware::cors_layer;
@@ -11,6 +12,9 @@ use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() {
+    // Load .env if present (non-fatal if absent).
+    let _ = dotenvy::dotenv();
+
     let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into());
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -22,7 +26,9 @@ async fn main() {
     let config = AppConfig::from_env();
     let addr = config.socket_addr();
 
-    let app = app_routes()
+    let app_state: Option<std::sync::Arc<state::AppState>> = state::build_state(&config).await;
+
+    let app = app_routes(app_state)
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 

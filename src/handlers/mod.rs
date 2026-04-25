@@ -1,10 +1,12 @@
 pub mod parse;
+pub mod query;
 pub mod validate;
 
 use axum::Json;
 use serde::Serialize;
 
 pub use parse::parse_handler;
+pub use query::query_handler;
 pub use validate::validate_handler;
 
 #[derive(Serialize)]
