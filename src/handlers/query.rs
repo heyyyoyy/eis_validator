@@ -15,7 +15,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, warn};
 
 use crate::error::AppError;
-use crate::state::{AppState, PdfChunk};
+use crate::repository::eis_documents::EisDocuments;
+use crate::state::AppState;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -65,10 +66,11 @@ pub async fn query_handler(
     let top_k = payload.top_k.unwrap_or(DEFAULT_TOP_K);
 
     // ── Step 1: vector similarity search ─────────────────────────────────────
-    let results: Vec<(f64, PdfChunk)> = state.search(&query, top_k).await.map_err(|e| {
-        tracing::error!("Vector search failed: {e}");
-        AppError::InternalMsg(e.to_string())
-    })?;
+    let results: Vec<(f64, EisDocuments)> =
+        state.repository.search(&query, top_k).await.map_err(|e| {
+            tracing::error!("Vector search failed: {e}");
+            AppError::InternalMsg(e.to_string())
+        })?;
 
     debug!(
         query_len = query.len(),
@@ -80,7 +82,7 @@ pub async fn query_handler(
         debug!(
             top_score = *score,
             top_source = %chunk.file_name,
-            top_page = chunk.page,
+            top_page = %chunk.page,
             "RAG top chunk selected"
         );
     }
@@ -161,7 +163,7 @@ pub async fn query_handler(
 
 /// Accumulate chunk content strings, respecting `MAX_CONTEXT_CHARS`.
 /// Chunks are already ordered by descending similarity score.
-pub(crate) fn build_context(results: &[(f64, PdfChunk)]) -> String {
+pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
     if results.is_empty() {
         return String::new();
     }
@@ -225,12 +227,12 @@ pub(crate) fn build_system_prompt(context: &str, has_context: bool) -> String {
 mod tests {
     use super::*;
 
-    fn chunk(id: &str, file_name: &str, page: i64, content: &str) -> PdfChunk {
-        PdfChunk {
+    fn chunk(id: &str, file_name: &str, page: i64, content: &str) -> EisDocuments {
+        EisDocuments {
             id: id.to_string(),
             file_name: file_name.to_string(),
-            page,
-            chunk_index: 0,
+            page: page.to_string(),
+            chunk_index: "0".into(),
             content: content.to_string(),
         }
     }

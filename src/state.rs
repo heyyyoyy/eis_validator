@@ -2,93 +2,26 @@ use std::sync::Arc;
 
 use rig::{
     client::{CompletionClient, EmbeddingsClient},
-    embeddings::EmbeddingModel,
     providers::openai,
 };
+use rig_sqlite::SqliteVectorStore;
 use rusqlite::ffi::sqlite3_auto_extension;
-use serde::{Deserialize, Serialize};
 use sqlite_vec::sqlite3_vec_init;
 use tokio_rusqlite::Connection;
 
 use crate::config::AppConfig;
-
-// ── Document type ─────────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PdfChunk {
-    pub id: String,
-    pub file_name: String,
-    pub page: i64,
-    pub chunk_index: i64,
-    pub content: String,
-}
+use crate::repository::eis_documents::EisDocuments;
+use crate::repository::EisRepository;
 
 // ── Concrete type aliases ─────────────────────────────────────────────────────
 
-pub type EmbedModel = openai::EmbeddingModel;
 pub type CompletModel = openai::responses_api::ResponsesCompletionModel;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 pub struct AppState {
-    pub conn: Connection,
-    pub embed_model: EmbedModel,
+    pub repository: EisRepository,
     pub completion_model: CompletModel,
-}
-
-impl AppState {
-    /// Run a vector similarity search directly against SQLite.
-    ///
-    /// Returns up to `top_k` chunks ordered by descending cosine similarity.
-    pub async fn search(&self, query: &str, top_k: u64) -> anyhow::Result<Vec<(f64, PdfChunk)>> {
-        let embedding = self.embed_model.embed_text(query).await?;
-
-        // Serialise the embedding to little-endian f32 bytes (sqlite-vec format).
-        let vec_bytes: Vec<u8> = embedding
-            .vec
-            .iter()
-            .flat_map(|&v| (v as f32).to_le_bytes())
-            .collect();
-
-        let results = self
-            .conn
-            .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT \
-                       d.id, \
-                       d.file_name, \
-                       d.page, \
-                       d.chunk_index, \
-                       d.content, \
-                       (1.0 - vec_distance_cosine(?, e.embedding)) AS score \
-                     FROM pdf_chunks_embeddings e \
-                     JOIN pdf_chunks d ON e.rowid = d.rowid \
-                     WHERE e.embedding MATCH ? AND k = ? \
-                     ORDER BY score DESC",
-                )?;
-
-                let blob = rusqlite::types::Value::Blob(vec_bytes.clone());
-                let rows = stmt
-                    .query_map(rusqlite::params![blob.clone(), blob, top_k], |row| {
-                        Ok((
-                            row.get::<_, f64>(5)?,
-                            PdfChunk {
-                                id: row.get(0)?,
-                                file_name: row.get(1)?,
-                                page: row.get(2)?,
-                                chunk_index: row.get(3)?,
-                                content: row.get(4)?,
-                            },
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok(rows)
-            })
-            .await?;
-
-        Ok(results)
-    }
 }
 
 // ── Initialisation ────────────────────────────────────────────────────────────
@@ -142,10 +75,18 @@ pub async fn build_state(config: &AppConfig) -> Option<Arc<AppState>> {
     let embed_model =
         client.embedding_model_with_ndims(&config.embedding_model, config.embedding_ndims);
     let completion_model = client.completion_model(&config.completion_model);
+    let vector_store: SqliteVectorStore<_, EisDocuments> =
+        match SqliteVectorStore::new(conn, &embed_model).await {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!("Failed to initialize SQLite vector store: {e}");
+                return None;
+            }
+        };
+    let vector_index = vector_store.index(embed_model);
 
     Some(Arc::new(AppState {
-        conn,
-        embed_model,
+        repository: EisRepository { vector_index },
         completion_model,
     }))
 }

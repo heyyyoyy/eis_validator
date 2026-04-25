@@ -25,17 +25,18 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[path = "../repository/eis_documents.rs"]
+mod eis_documents;
+use eis_documents::EisDocuments;
 use rig::{
     client::ProviderClient,
     embeddings::{EmbeddingModel, EmbeddingsBuilder},
     prelude::EmbeddingsClient,
     providers::openai,
     vector_store::InsertDocuments,
-    Embed,
 };
-use rig_sqlite::{Column, ColumnValue, SqliteVectorStore, SqliteVectorStoreTable};
+use rig_sqlite::SqliteVectorStore;
 use rusqlite::ffi::sqlite3_auto_extension;
-use serde::{Deserialize, Serialize};
 use sqlite_vec::sqlite3_vec_init;
 use tokio_rusqlite::Connection;
 use tracing::{error, info, warn};
@@ -52,50 +53,6 @@ struct Cli {
     /// Directory containing PDF files to index (searched recursively)
     #[arg(short, long, value_name = "DIR")]
     dir: PathBuf,
-}
-
-// ── Document type ─────────────────────────────────────────────────────────────
-
-/// One text chunk extracted from a PDF, ready to be embedded.
-#[derive(Embed, Clone, Debug, Serialize, Deserialize)]
-struct PdfChunk {
-    /// Unique identifier: `"{filename}::p{page}::c{chunk_idx}"`
-    id: String,
-    file_name: String,
-    page: usize,
-    chunk_index: usize,
-    #[embed]
-    content: String,
-}
-
-impl SqliteVectorStoreTable for PdfChunk {
-    fn name() -> &'static str {
-        "pdf_chunks"
-    }
-
-    fn schema() -> Vec<Column> {
-        vec![
-            Column::new("id", "TEXT PRIMARY KEY"),
-            Column::new("file_name", "TEXT").indexed(),
-            Column::new("page", "INTEGER"),
-            Column::new("chunk_index", "INTEGER"),
-            Column::new("content", "TEXT"),
-        ]
-    }
-
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn column_values(&self) -> Vec<(&'static str, Box<dyn ColumnValue>)> {
-        vec![
-            ("id", Box::new(self.id.clone())),
-            ("file_name", Box::new(self.file_name.clone())),
-            ("page", Box::new(self.page.to_string())),
-            ("chunk_index", Box::new(self.chunk_index.to_string())),
-            ("content", Box::new(self.content.clone())),
-        ]
-    }
 }
 
 // ── Text chunking ─────────────────────────────────────────────────────────────
@@ -163,11 +120,11 @@ fn extract_pages(path: &Path) -> Result<Vec<(usize, String)>> {
 
 // ── Embedding helper ──────────────────────────────────────────────────────────
 
-/// Embed a batch of `PdfChunk`s using `model` and return the result pairs.
+/// Embed a batch of `EisDocuments` using `model` and return the result pairs.
 async fn embed_batch<M>(
     model: M,
-    batch: Vec<PdfChunk>,
-) -> Result<Vec<(PdfChunk, rig::OneOrMany<rig::embeddings::Embedding>)>>
+    batch: Vec<EisDocuments>,
+) -> Result<Vec<(EisDocuments, rig::OneOrMany<rig::embeddings::Embedding>)>>
 where
     M: EmbeddingModel + Clone,
 {
@@ -264,7 +221,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("opening SQLite at {db_path}"))?;
 
-    let store: SqliteVectorStore<_, PdfChunk> = SqliteVectorStore::new(conn, &model)
+    let store: SqliteVectorStore<_, EisDocuments> = SqliteVectorStore::new(conn, &model)
         .await
         .context("initialising SqliteVectorStore")?;
 
@@ -291,7 +248,7 @@ async fn main() -> Result<()> {
 
     let mut total_chunks = 0usize;
     let mut total_files_ok = 0usize;
-    let mut pending: Vec<PdfChunk> = Vec::new();
+    let mut pending: Vec<EisDocuments> = Vec::new();
 
     for pdf_path in &pdf_paths {
         let file_name = pdf_path
@@ -312,11 +269,11 @@ async fn main() -> Result<()> {
         for (page_num, page_text) in &pages {
             let raw_chunks = chunk_text(page_text, chunk_size, chunk_overlap);
             for (chunk_idx, content) in raw_chunks.into_iter().enumerate() {
-                pending.push(PdfChunk {
+                pending.push(EisDocuments {
                     id: format!("{file_name}::p{page_num}::c{chunk_idx}"),
                     file_name: file_name.clone(),
-                    page: *page_num,
-                    chunk_index: chunk_idx,
+                    page: page_num.to_string(),
+                    chunk_index: chunk_idx.to_string(),
                     content,
                 });
 

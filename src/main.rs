@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod handlers;
 mod middleware;
+mod repository;
 mod routes;
 mod state;
 
@@ -15,11 +16,10 @@ async fn main() {
     // Load .env if present (non-fatal if absent).
     let _ = dotenvy::dotenv();
 
-    let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into());
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| log_level.as_str().into()),
+            tracing_subscriber::EnvFilter::try_from_env("LOG_LEVEL")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
