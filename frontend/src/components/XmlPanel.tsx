@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import type { ValidationError } from "../api";
-import { extractMissingName } from "../App";
+import { extractMissingName } from "../utils/validation";
 
 interface GhostEntry {
   err: ValidationError;

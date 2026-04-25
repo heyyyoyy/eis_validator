@@ -1,5 +1,5 @@
 import type { ValidationError, ValidationResponse } from "../api";
-import { isMissingError, extractMissingName } from "../App";
+import { isMissingError, extractMissingName } from "../utils/validation";
 
 interface ValidationPanelProps {
   response: ValidationResponse | null;

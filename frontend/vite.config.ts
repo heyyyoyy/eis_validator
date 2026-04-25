@@ -13,6 +13,7 @@ export default defineConfig({
     proxy: {
       "/parse": { target: proxyTarget, changeOrigin: true },
       "/validate": { target: proxyTarget, changeOrigin: true },
+      "/query": { target: proxyTarget, changeOrigin: true },
       "/health": { target: proxyTarget, changeOrigin: true },
     },
   },

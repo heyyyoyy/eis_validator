@@ -205,19 +205,20 @@ pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
 pub(crate) fn build_system_prompt(context: &str, has_context: bool) -> String {
     if has_context {
         format!(
-            "You are a helpful assistant. Answer the user's question using the \
-             retrieved document excerpts below. Respond in the same language as the user’s query. \
-             Cite source files and page numbers \
-             where relevant. If the excerpts do not contain enough information, say so.\n\n\
-             --- Retrieved context ---\n{context}\n--- End of context ---",
+            "Вы — полезный ассистент. Ответьте на вопрос пользователя, \
+            используя приведённые ниже фрагменты документов. \
+            Отвечайте на том же языке, что и запрос пользователя. \
+            Если во фрагментах недостаточно информации, прямо об этом скажите. \
+            --- Извлечённый контекст --- {context} --- Конец контекста ---
+",
             context = context,
         )
     } else {
-        "You are a helpful assistant. No relevant documents were found in the \
-         knowledge base for this query. Do not answer from general knowledge. \
-         Tell the user you could not find relevant excerpts and ask a clarifying query. \
-         Respond in the same language as the user’s query."
-            .to_string()
+        "Вы — полезный ассистент. В базе знаний не найдено релевантных \
+        документов для этого запроса. Не отвечайте, опираясь на общие знания. \
+        Сообщите пользователю, что вы не нашли подходящих фрагментов, \
+        и задайте уточняющий вопрос. Отвечайте на том же языке, \
+        что и запрос пользователя.".to_string()
     }
 }
 
