@@ -12,12 +12,16 @@ pub struct AppConfig {
     pub openai_base_url: Option<String>,
     /// Embedding model name (must match what was used when indexing).
     pub embedding_model: String,
-    /// Embedding vector dimensions (must match the indexed database).
+    /// Embedding vector dimensions (must match the indexed collection).
     pub embedding_ndims: usize,
     /// Completion model name used for RAG responses.
     pub completion_model: String,
-    /// Path to the SQLite database produced by `index_pdfs`.
-    pub db_path: String,
+    /// Qdrant server URL (gRPC).
+    pub qdrant_url: String,
+    /// Optional Qdrant API key for cloud deployments.
+    pub qdrant_api_key: Option<String>,
+    /// Name of the Qdrant collection that stores document embeddings.
+    pub qdrant_collection: String,
 }
 
 impl AppConfig {
@@ -38,7 +42,11 @@ impl AppConfig {
             .unwrap_or(1536);
         let completion_model =
             std::env::var("COMPLETION_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-        let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "chunks.db".into());
+        let qdrant_url =
+            std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
+        let qdrant_api_key = std::env::var("QDRANT_API_KEY").ok();
+        let qdrant_collection =
+            std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "eis_documents".into());
 
         Self {
             host,
@@ -49,7 +57,9 @@ impl AppConfig {
             embedding_model,
             embedding_ndims,
             completion_model,
-            db_path,
+            qdrant_url,
+            qdrant_api_key,
+            qdrant_collection,
         }
     }
 

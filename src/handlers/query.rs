@@ -310,21 +310,21 @@ mod tests {
     #[test]
     fn prompt_with_context_includes_context_block() {
         let prompt = build_system_prompt("some context", true);
-        assert!(prompt.contains("--- Retrieved context ---"));
+        assert!(prompt.contains("--- Извлечённый контекст ---"));
         assert!(prompt.contains("some context"));
-        assert!(prompt.contains("--- End of context ---"));
+        assert!(prompt.contains("--- Конец контекста ---"));
     }
 
     #[test]
     fn prompt_without_context_mentions_no_documents() {
         let prompt = build_system_prompt("", false);
-        assert!(prompt.contains("No relevant documents were found"));
-        assert!(!prompt.contains("Retrieved context"));
+        assert!(prompt.contains("не найдено релевантных"));
+        assert!(!prompt.contains("Извлечённый контекст"));
     }
 
     #[test]
-    fn prompt_with_context_instructs_citation() {
+    fn prompt_with_context_instructs_language_match() {
         let prompt = build_system_prompt("ctx", true);
-        assert!(prompt.contains("Cite source files and page numbers"));
+        assert!(prompt.contains("на том же языке"));
     }
 }

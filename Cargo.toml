@@ -27,13 +27,12 @@ quick-xml = "0.39"
 encoding_rs = "0.8"
 base64 = "0.22"
 
-# Indexer binary shared dependencies
-rig-core = "0.35"
-rig-sqlite = "0.2"
+# RAG / indexer dependencies
+rig-core = { version = "0.35", features = ["derive"] }
+rig-qdrant = "0.2.4"
+qdrant-client = "1.17.0"
+bm25 = "2.3.2"
 walkdir = "2"
-rusqlite = { version = "0.32", features = ["bundled"] }
-tokio-rusqlite = { version = "0.6", features = ["bundled"] }
-sqlite-vec = "0.1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"

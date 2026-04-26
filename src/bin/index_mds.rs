@@ -1,46 +1,56 @@
-//! Markdown embedding indexer.
+//! Markdown embedding indexer — Qdrant backend.
 //!
 //! Walks a directory of Markdown (`.md`) files, splits content into logical
-//! chunks (heading-aware, then size-capped with overlap), generates embeddings
-//! via an OpenAI-compatible API, and persists both the text chunks and their
-//! vector embeddings to a SQLite database using `rig-sqlite` (backed by the
-//! `sqlite-vec` extension).
+//! chunks (heading-aware, then size-capped with overlap), generates:
+//!
+//! - **Dense embeddings** via an OpenAI-compatible API.
+//! - **Sparse BM25 vectors** computed locally over the full corpus.
+//!
+//! Both vector types are upserted into a Qdrant collection under the named
+//! vectors `"dense"` and `"sparse"`.
 //!
 //! # Environment variables
 //!
-//! | Variable          | Default                        | Purpose                                  |
-//! |-------------------|-------------------------------|------------------------------------------|
-//! | `OPENAI_API_KEY`  | *(required)*                  | Bearer token for the embedding endpoint  |
-//! | `OPENAI_BASE_URL` | `https://api.openai.com/v1`   | Base URL (supports any compatible proxy) |
-//! | `EMBEDDING_MODEL` | `text-embedding-3-small`       | Model name                               |
-//! | `EMBEDDING_NDIMS` | `1536`                        | Embedding dimensions (match your model)  |
-//! | `CHUNK_SIZE`      | `512`                         | Max characters per chunk                 |
-//! | `CHUNK_OVERLAP`   | `64`                          | Overlap characters between chunks        |
-//! | `DB_PATH`         | `chunks.db`                   | Output SQLite file path                  |
-//! | `BATCH_SIZE`      | `50`                          | Chunks per embedding API call            |
+//! | Variable            | Default                        | Purpose                                   |
+//! |---------------------|-------------------------------|-------------------------------------------|
+//! | `OPENAI_API_KEY`    | *(required)*                  | Bearer token for the embedding endpoint   |
+//! | `OPENAI_BASE_URL`   | `https://api.openai.com/v1`   | Base URL (supports any compatible proxy)  |
+//! | `EMBEDDING_MODEL`   | `text-embedding-3-small`       | Model name                                |
+//! | `EMBEDDING_NDIMS`   | `1536`                        | Embedding dimensions (match your model)   |
+//! | `CHUNK_SIZE`        | `512`                         | Max characters per chunk                  |
+//! | `CHUNK_OVERLAP`     | `64`                          | Overlap characters between chunks         |
+//! | `BATCH_SIZE`        | `50`                          | Chunks per embedding API call             |
+//! | `QDRANT_URL`        | `http://localhost:6334`        | Qdrant server URL (gRPC)                  |
+//! | `QDRANT_API_KEY`    | *(optional)*                  | Qdrant API key for cloud deployments      |
+//! | `QDRANT_COLLECTION` | `eis_documents`               | Target collection name                    |
 
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use anyhow::{Context, Result};
+use bm25::{Embedder, EmbedderBuilder, Language};
 use clap::Parser;
+use qdrant_client::{
+    qdrant::{
+        CreateCollectionBuilder, Distance, Modifier, NamedVectors, PointStruct,
+        SparseIndexConfigBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
+        UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
+    },
+    Payload, Qdrant,
+};
+
 #[path = "../repository/eis_documents.rs"]
 mod eis_documents;
 use eis_documents::EisDocuments;
+
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use rig::{
-    client::ProviderClient,
-    embeddings::{EmbeddingModel, EmbeddingsBuilder},
-    prelude::EmbeddingsClient,
+    client::{EmbeddingsClient, ProviderClient},
+    embeddings::EmbeddingModel,
     providers::openai,
-    vector_store::InsertDocuments,
 };
-use rig_sqlite::SqliteVectorStore;
-use rusqlite::ffi::sqlite3_auto_extension;
-use sqlite_vec::sqlite3_vec_init;
-use tokio_rusqlite::Connection;
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
 
@@ -49,38 +59,27 @@ use walkdir::WalkDir;
 #[derive(Parser)]
 #[command(
     name = "index_mds",
-    about = "Extract text from Markdown files, embed them, and store in SQLite"
+    about = "Extract text from Markdown files, embed them, and store in Qdrant"
 )]
 struct Cli {
     /// Directory containing Markdown files to index (searched recursively)
     #[arg(short, long, value_name = "DIR")]
     dir: PathBuf,
 
-    /// Append to an existing database instead of creating a new one.
-    /// Without this flag the database file is removed before indexing.
+    /// Append to an existing collection instead of recreating it.
+    /// Without this flag the collection is deleted and recreated.
     #[arg(long, default_value_t = false)]
     append: bool,
 }
 
 // ── Markdown parsing ──────────────────────────────────────────────────────────
 
-/// A heading-delimited section extracted from a Markdown document.
 #[derive(Debug)]
 struct Section {
-    /// The heading text that opened this section, or `"(root)"` for content
-    /// before the first heading.
     heading: String,
-    /// Plain-text body of the section (markup stripped).
     body: String,
 }
 
-/// Parse `source` into a list of [`Section`]s.
-///
-/// Each ATX/Setext heading (`#` … `######`) starts a new section. Content
-/// before the first heading belongs to the synthetic `"(root)"` section.
-/// Inline markup (bold, italic, code spans, links, images, etc.) is stripped
-/// so only readable text remains. Block-level elements (lists, blockquotes,
-/// code blocks) contribute their plain-text content.
 fn parse_sections(source: &str) -> Vec<Section> {
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -98,8 +97,6 @@ fn parse_sections(source: &str) -> Vec<Section> {
     let push_section = |sections: &mut Vec<Section>, heading: &str, body: &str| {
         let trimmed = body.trim().to_string();
         if !trimmed.is_empty() {
-            // Prepend the heading into the body so the embedding captures the
-            // section title (e.g. "РДИК_0003") alongside its content.
             let body_with_heading = if heading != "(root)" {
                 format!("{heading}\n\n{trimmed}")
             } else {
@@ -115,7 +112,6 @@ fn parse_sections(source: &str) -> Vec<Section> {
     for event in parser {
         match event {
             Event::Start(Tag::Heading { .. }) => {
-                // Flush the current section before starting the new heading.
                 push_section(&mut sections, &current_heading, &current_body);
                 current_body.clear();
                 heading_text.clear();
@@ -141,7 +137,6 @@ fn parse_sections(source: &str) -> Vec<Section> {
                     current_body.push('\n');
                 }
             }
-            // Paragraph / list item / blockquote boundaries → newlines in body.
             Event::End(TagEnd::Paragraph)
             | Event::End(TagEnd::Item)
             | Event::End(TagEnd::BlockQuote(_))
@@ -150,23 +145,16 @@ fn parse_sections(source: &str) -> Vec<Section> {
                     current_body.push('\n');
                 }
             }
-            // Skip HTML, footnotes, and all other structural tags.
             _ => {}
         }
     }
 
-    // Flush the last section.
     push_section(&mut sections, &current_heading, &current_body);
-
     sections
 }
 
 // ── Text chunking ─────────────────────────────────────────────────────────────
 
-/// Split `text` into overlapping windows of at most `size` characters.
-///
-/// Each step advances by `(size - overlap)` characters so consecutive chunks
-/// share `overlap` characters of context. Empty chunks are skipped.
 fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {
     if text.is_empty() || size == 0 {
         return vec![];
@@ -194,22 +182,43 @@ fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {
     chunks
 }
 
-// ── Embedding helper ──────────────────────────────────────────────────────────
+// ── Slug helper ───────────────────────────────────────────────────────────────
 
-async fn embed_batch<M>(
-    model: M,
-    batch: Vec<EisDocuments>,
-) -> Result<Vec<(EisDocuments, rig::OneOrMany<rig::embeddings::Embedding>)>>
-where
-    M: EmbeddingModel + Clone,
-{
-    let result = EmbeddingsBuilder::new(model)
-        .documents(batch)
-        .context("building embeddings batch")?
-        .build()
-        .await
-        .context("calling embedding API")?;
-    Ok(result)
+fn slugify(heading: &str) -> String {
+    heading
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect::<String>()
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// Aggregate duplicate sparse indices by summing their values.
+///
+/// The `bm25` crate emits one `TokenEmbedding` per token *occurrence*, so a
+/// token that appears N times in a document produces N entries with the same
+/// index. Qdrant requires indices to be unique within a sparse vector.
+fn dedup_sparse(
+    indices: impl Iterator<Item = u32>,
+    values: impl Iterator<Item = f32>,
+) -> (Vec<u32>, Vec<f32>) {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<u32, f32> = BTreeMap::new();
+    for (idx, val) in indices.zip(values) {
+        *map.entry(idx).or_insert(0.0) += val;
+    }
+    map.into_iter().unzip()
+}
+
+/// Derive a stable numeric ID from a string so that re-indexing the same chunk
+/// always produces the same Qdrant point ID (upsert semantics).
+fn point_id_from_str(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -243,8 +252,7 @@ async fn main() -> Result<()> {
         .or(default_ndims)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "EMBEDDING_NDIMS must be set for model '{model_name}' \
-                 (e.g. EMBEDDING_NDIMS=768)"
+                "EMBEDDING_NDIMS must be set for model '{model_name}' (e.g. EMBEDDING_NDIMS=768)"
             )
         })?;
     let chunk_size: usize = std::env::var("CHUNK_SIZE")
@@ -255,11 +263,15 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(64);
-    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "chunks.db".into());
     let batch_size: usize = std::env::var("BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
+    let qdrant_url =
+        std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
+    let qdrant_api_key = std::env::var("QDRANT_API_KEY").ok();
+    let collection =
+        std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "eis_documents".into());
 
     info!(
         model = %model_name,
@@ -267,44 +279,24 @@ async fn main() -> Result<()> {
         chunk_size,
         chunk_overlap,
         batch_size,
-        db = %db_path,
+        qdrant = %qdrant_url,
+        collection = %collection,
         append = cli.append,
         "Starting Markdown indexer"
     );
 
-    // ── Database setup ────────────────────────────────────────────────────────
+    // ── OpenAI / embedding client ─────────────────────────────────────────────
 
-    if !cli.append {
-        // Remove any existing database so the run starts clean.
-        if Path::new(&db_path).exists() {
-            fs::remove_file(&db_path)
-                .with_context(|| format!("removing existing database at {db_path}"))?;
-            info!("Removed existing database at {db_path}");
-        }
+    let oai_client = openai::Client::from_env();
+    let embed_model = oai_client.embedding_model_with_ndims(&model_name, ndims);
+
+    // ── Qdrant client ─────────────────────────────────────────────────────────
+
+    let mut qdrant_builder = Qdrant::from_url(&qdrant_url);
+    if let Some(key) = qdrant_api_key {
+        qdrant_builder = qdrant_builder.api_key(key);
     }
-
-    // SAFETY: called once at startup before any connections exist.
-    unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut i8,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(sqlite3_vec_init as *const ())));
-    }
-
-    let client = openai::Client::from_env();
-    let model = client.embedding_model_with_ndims(&model_name, ndims);
-
-    let conn = Connection::open(&db_path)
-        .await
-        .with_context(|| format!("opening SQLite at {db_path}"))?;
-
-    let store: SqliteVectorStore<_, EisDocuments> = SqliteVectorStore::new(conn, &model)
-        .await
-        .context("initialising SqliteVectorStore")?;
+    let qdrant = qdrant_builder.build().context("building Qdrant client")?;
 
     // ── Collect Markdown paths ────────────────────────────────────────────────
 
@@ -328,19 +320,15 @@ async fn main() -> Result<()> {
 
     info!("Found {} Markdown file(s) to process", md_paths.len());
 
-    // ── Index loop ────────────────────────────────────────────────────────────
+    // ── Pass 1: parse every file and collect all chunks ───────────────────────
 
-    let mut total_chunks = 0usize;
-    let mut total_files_ok = 0usize;
-    let mut pending: Vec<EisDocuments> = Vec::new();
+    let mut all_docs: Vec<EisDocuments> = Vec::new();
 
     for md_path in &md_paths {
         let file_name = md_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| md_path.display().to_string());
-
-        info!("Processing {file_name}");
 
         let source = match fs::read_to_string(md_path) {
             Ok(s) => s,
@@ -356,94 +344,149 @@ async fn main() -> Result<()> {
         }
 
         let sections = parse_sections(&source);
-
         if sections.is_empty() {
-            warn!("Skipping {file_name}: no text content found after parsing");
+            warn!("Skipping {file_name}: no text content after parsing");
             continue;
         }
 
-        let mut file_chunks = 0usize;
-
         for section in &sections {
-            let raw_chunks = chunk_text(&section.body, chunk_size, chunk_overlap);
-
-            if raw_chunks.is_empty() {
-                continue;
-            }
-
-            for (chunk_idx, content) in raw_chunks.into_iter().enumerate() {
-                pending.push(EisDocuments {
-                    id: format!("{file_name}::{section_slug}::c{chunk_idx}",
-                        section_slug = slugify(&section.heading)),
+            for (chunk_idx, content) in
+                chunk_text(&section.body, chunk_size, chunk_overlap).into_iter().enumerate()
+            {
+                all_docs.push(EisDocuments {
+                    id: format!(
+                        "{file_name}::{section_slug}::c{chunk_idx}",
+                        section_slug = slugify(&section.heading)
+                    ),
                     file_name: file_name.clone(),
                     page: section.heading.clone(),
                     chunk_index: chunk_idx.to_string(),
                     content,
                 });
-                file_chunks += 1;
-
-                if pending.len() >= batch_size {
-                    let batch = std::mem::take(&mut pending);
-                    let n = batch.len();
-                    let embeddings = embed_batch(model.clone(), batch)
-                        .await
-                        .with_context(|| format!("embedding batch for {file_name}"))?;
-                    store
-                        .insert_documents(embeddings)
-                        .await
-                        .context("inserting documents into SQLite")?;
-                    total_chunks += n;
-                    info!("Flushed batch of {n} chunks (total so far: {total_chunks})");
-                }
             }
         }
-
-        info!("  → {file_name}: {file_chunks} chunk(s) across {} section(s)", sections.len());
-        total_files_ok += 1;
     }
 
-    // ── Final flush ───────────────────────────────────────────────────────────
+    info!("Collected {} chunks across all files", all_docs.len());
 
-    if !pending.is_empty() {
-        let n = pending.len();
-        let embeddings = embed_batch(model.clone(), pending)
-            .await
-            .context("embedding final batch")?;
-        store
-            .insert_documents(embeddings)
-            .await
-            .context("inserting final batch into SQLite")?;
-        total_chunks += n;
-        info!("Flushed final batch of {n} chunks");
+    if all_docs.is_empty() {
+        warn!("No chunks produced — aborting");
+        return Ok(());
     }
 
-    info!(
-        "Done. Processed {total_files_ok}/{} file(s), stored {total_chunks} chunk(s) in {db_path}",
-        md_paths.len()
-    );
+    // ── Pass 2: fit BM25 on the full corpus ───────────────────────────────────
+
+    let corpus_texts: Vec<&str> = all_docs.iter().map(|d| d.content.as_str()).collect();
+    let bm25: Embedder<u32> =
+        EmbedderBuilder::with_fit_to_corpus(Language::Russian, corpus_texts.as_slice()).build();
+
+    info!(avgdl = bm25.avgdl(), "BM25 corpus fitted");
+
+    // ── Recreate or reuse the Qdrant collection ───────────────────────────────
+
+    if !cli.append {
+        if qdrant.collection_exists(&collection).await? {
+            qdrant
+                .delete_collection(&collection)
+                .await
+                .with_context(|| format!("deleting collection '{collection}'"))?;
+            info!("Deleted existing collection '{collection}'");
+        }
+
+        let mut dense_config = VectorsConfigBuilder::default();
+        dense_config.add_named_vector_params(
+            "dense",
+            VectorParamsBuilder::new(ndims as u64, Distance::Cosine),
+        );
+
+        let mut sparse_config = SparseVectorsConfigBuilder::default();
+        sparse_config.add_named_vector_params(
+            "sparse",
+            SparseVectorParamsBuilder::default()
+                .modifier(Modifier::Idf)
+                .index(SparseIndexConfigBuilder::default()),
+        );
+
+        qdrant
+            .create_collection(
+                CreateCollectionBuilder::new(&collection)
+                    .vectors_config(dense_config)
+                    .sparse_vectors_config(sparse_config),
+            )
+            .await
+            .with_context(|| format!("creating collection '{collection}'"))?;
+
+        info!("Created collection '{collection}' with dense ({ndims}D) + sparse vectors");
+    } else {
+        info!("Appending to existing collection '{collection}'");
+    }
+
+    // ── Pass 3: embed in batches and upsert ──────────────────────────────────
+
+    let total = all_docs.len();
+    let mut upserted = 0usize;
+
+    for (batch_idx, chunk) in all_docs.chunks(batch_size).enumerate() {
+        let texts: Vec<String> = chunk.iter().map(|d| d.content.clone()).collect();
+
+        let embeddings: Vec<Vec<f32>> = embed_model
+            .embed_texts(texts)
+            .await
+            .with_context(|| format!("embedding batch {batch_idx}"))?
+            .into_iter()
+            .map(|e| e.vec.into_iter().map(|v| v as f32).collect())
+            .collect();
+
+        let points: Vec<PointStruct> = chunk
+            .iter()
+            .zip(embeddings.into_iter())
+            .map(|(doc, dense_vec)| {
+                let sparse_emb = bm25.embed(&doc.content);
+                let (sparse_indices, sparse_values) = dedup_sparse(
+                    sparse_emb.indices().copied(),
+                    sparse_emb.values().copied(),
+                );
+
+                let named_vectors = NamedVectors::default()
+                    .add_vector("dense", dense_vec)
+                    .add_vector(
+                        "sparse",
+                        qdrant_client::qdrant::Vector::new_sparse(sparse_indices, sparse_values),
+                    );
+
+                let payload = Payload::try_from(serde_json::json!({
+                    "id": doc.id,
+                    "file_name": doc.file_name,
+                    "page": doc.page,
+                    "chunk_index": doc.chunk_index,
+                    "content": doc.content,
+                }))
+                .expect("payload serialization is infallible");
+
+                PointStruct::new(point_id_from_str(&doc.id), named_vectors, payload)
+            })
+            .collect();
+
+        let n = points.len();
+        qdrant
+            .upsert_points(UpsertPointsBuilder::new(&collection, points))
+            .await
+            .with_context(|| format!("upserting batch {batch_idx}"))?;
+
+        upserted += n;
+        info!("Upserted batch {batch_idx}: {n} points (total so far: {upserted}/{total})");
+    }
+
+    info!("Done. Upserted {upserted} chunk(s) into Qdrant collection '{collection}'");
 
     Ok(())
-}
-
-/// Convert a heading string to a compact, filename-safe slug.
-///
-/// Lowercases, trims, and collapses whitespace/punctuation to underscores.
-fn slugify(heading: &str) -> String {
-    heading
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-        .collect::<String>()
-        .split('_')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("_")
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_text, parse_sections, slugify};
+    use super::{chunk_text, parse_sections, point_id_from_str, slugify};
 
     #[test]
     fn chunk_empty_string() {
@@ -459,9 +502,6 @@ mod tests {
 
     #[test]
     fn chunk_produces_overlap() {
-        // size=6, overlap=2 → step=4
-        // chunk 0: [0..6] = "abcdef"
-        // chunk 1: [4..10] = "efghij"
         let chunks = chunk_text("abcdefghij", 6, 2);
         assert_eq!(chunks.len(), 2);
         assert_eq!(&chunks[0], "abcdef");
@@ -498,7 +538,6 @@ mod tests {
         let sections = parse_sections(md);
         assert_eq!(sections.len(), 1);
         let body = &sections[0].body;
-        // Heading is prepended into the body for embedding quality.
         assert!(body.starts_with("Header"));
         assert!(body.contains("bold"));
         assert!(body.contains("italic"));
@@ -510,7 +549,6 @@ mod tests {
 
     #[test]
     fn parse_sections_skips_empty_sections() {
-        // The heading with no body should produce no section.
         let md = "# Empty\n\n# Has content\n\nSome text here.";
         let sections = parse_sections(md);
         assert_eq!(sections.len(), 1);
@@ -519,8 +557,6 @@ mod tests {
 
     #[test]
     fn parse_sections_heading_prepended_in_body() {
-        // The heading must appear at the start of the body so the embedding
-        // can match queries that mention only the heading identifier (e.g. "РДИК_0003").
         let md = "### РДИК_0003 — Дубль документа\n\nОписание: уже существует документ.";
         let sections = parse_sections(md);
         assert_eq!(sections.len(), 1);
@@ -531,7 +567,6 @@ mod tests {
 
     #[test]
     fn parse_sections_root_body_not_prefixed() {
-        // Content before any heading is "(root)" — no prefix should be added.
         let md = "Just plain intro text.";
         let sections = parse_sections(md);
         assert_eq!(sections[0].heading, "(root)");
@@ -543,5 +578,19 @@ mod tests {
         assert_eq!(slugify("Hello World"), "hello_world");
         assert_eq!(slugify("  foo  bar  "), "foo_bar");
         assert_eq!(slugify("(root)"), "root");
+    }
+
+    #[test]
+    fn point_id_is_deterministic() {
+        let a = point_id_from_str("test::root::c0");
+        let b = point_id_from_str("test::root::c0");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn point_id_different_ids_differ() {
+        let a = point_id_from_str("file_a::root::c0");
+        let b = point_id_from_str("file_b::root::c0");
+        assert_ne!(a, b);
     }
 }
