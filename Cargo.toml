@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 default-run = "eis_validator"
 
+[[bin]]
+name = "index_mds"
+path = "src/bin/index_mds.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
@@ -23,10 +27,9 @@ quick-xml = "0.39"
 encoding_rs = "0.8"
 base64 = "0.22"
 
-# PDF indexer binary dependencies
+# Indexer binary shared dependencies
 rig-core = "0.35"
 rig-sqlite = "0.2"
-lopdf = "0.38"
 walkdir = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio-rusqlite = { version = "0.6", features = ["bundled"] }
@@ -34,3 +37,4 @@ sqlite-vec = "0.1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
+pulldown-cmark = "0.13"

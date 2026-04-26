@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Rust service (Axum/Tokio): EIS package **parse** and XSD **validate** HTTP APIs; CLI **`index_pdfs`** embeds PDF chunks into SQLite (`rig-core`, `sqlite-vec`, `lopdf`). XSD via **libxml2** (`libxml` crate).
+Rust service (Axum/Tokio): EIS package **parse** and XSD **validate** HTTP APIs; CLI **`index_mds`** embeds Markdown chunks into SQLite (`rig-core`, `sqlite-vec`, `pulldown-cmark`). XSD via **libxml2** (`libxml` crate).
 
 ## Layout
 
@@ -17,7 +17,7 @@ Rust service (Axum/Tokio): EIS package **parse** and XSD **validate** HTTP APIs;
     ├── config.rs
     ├── error.rs
     ├── bin
-    │   └── index_pdfs.rs
+    │   └── index_mds.rs
     ├── handlers
     │   ├── mod.rs
     │   ├── parse.rs
@@ -42,11 +42,11 @@ Plain HTTP only (TLS at reverse proxy).
 
 ## Config
 
-Copy `.env.example` → `.env`. `index_pdfs` auto-loads `.env` via `dotenvy`.
+Copy `.env.example` → `.env`. `index_mds` auto-loads `.env` via `dotenvy`.
 
 **Server:** `HOST` (default `0.0.0.0`), `PORT` (`3000`), `LOG_LEVEL` (`info`).
 
-**`index_pdfs`:** `OPENAI_API_KEY` (required), `OPENAI_BASE_URL` (`https://api.openai.com/v1`), `EMBEDDING_MODEL` (`text-embedding-3-small`), `EMBEDDING_NDIMS` (required for non-OpenAI models; auto for `text-embedding-3-small`→1536, `text-embedding-3-large`→3072, `text-embedding-ada-002`→1536), `CHUNK_SIZE`/`CHUNK_OVERLAP`/`BATCH_SIZE` (512/64/50; keep batch ≤100), `DB_PATH` (`chunks.db` → `pdf_chunks` rows).
+**`index_mds`:** `OPENAI_API_KEY` (required), `OPENAI_BASE_URL` (`https://api.openai.com/v1`), `EMBEDDING_MODEL` (`text-embedding-3-small`), `EMBEDDING_NDIMS` (required for non-OpenAI models; auto for `text-embedding-3-small`→1536, `text-embedding-3-large`→3072, `text-embedding-ada-002`→1536), `CHUNK_SIZE`/`CHUNK_OVERLAP`/`BATCH_SIZE` (512/64/50; keep batch ≤100), `DB_PATH` (`chunks.db` → `eis_documents` rows).
 
 ## Prerequisites and build
 
@@ -64,7 +64,7 @@ curl http://127.0.0.1:3000/health
 curl -F "file=@your_file.xml" http://127.0.0.1:3000/validate
 ```
 
-**`index_pdfs`:** `cargo run --bin index_pdfs -- --dir /path/to/pdfs` (or set `OPENAI_API_KEY` etc. inline; see `.env.example`).
+**`index_mds`:** `cargo run --bin index_mds -- --dir /path/to/docs` (append to existing DB: add `--append`; see `.env.example` for env vars).
 
 ## Coding Guidelines
 
