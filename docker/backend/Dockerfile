@@ -15,6 +15,7 @@ COPY Cargo.toml Cargo.lock ./
 # Create a dummy main so `cargo build` can resolve and compile all deps
 RUN mkdir -p src/bin && \
     echo 'fn main() {}' > src/main.rs && \
+    echo 'fn main() {}' > src/bin/index_mds.rs && \
     echo 'fn main() {}' > src/bin/generate_certs.rs && \
     cargo build --release && \
     rm -rf src

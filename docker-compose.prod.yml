@@ -5,6 +5,31 @@ name: eis_validator
 
 services:
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    expose:
+      - "6333"
+      - "6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
   cert-gen:
     image: alpine/openssl:latest
     volumes:
@@ -28,6 +53,17 @@ services:
       HOST: "0.0.0.0"
       PORT: "${PORT:-3000}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-text-embedding-3-small}"
+      EMBEDDING_NDIMS: "${EMBEDDING_NDIMS:-1536}"
+      COMPLETION_MODEL: "${COMPLETION_MODEL:-gpt-4o-mini}"
+      QDRANT_URL: "http://qdrant:${QDRANT_PORT:-6334}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      QDRANT_COLLECTION: "${QDRANT_COLLECTION:-eis_documents}"
+    depends_on:
+      qdrant:
+        condition: service_healthy
     expose:
       - "${PORT:-3000}"
     networks:
@@ -88,3 +124,4 @@ networks:
 
 volumes:
   certs:
+  qdrant_storage:
