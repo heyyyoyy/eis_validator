@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bm25::{Embedder, EmbedderBuilder, Language};
-use qdrant_client::qdrant::{QueryPointsBuilder, ScoredPoint, VectorInput, Value};
+use qdrant_client::qdrant::{QueryPointsBuilder, ScoredPoint, Value, VectorInput};
 use qdrant_client::Qdrant;
 use rig::embeddings::EmbeddingModel;
 use rig::providers::openai;
@@ -65,11 +65,9 @@ impl EisRepository {
             .with_payload(true)
             .build();
 
-        let (dense_res, sparse_res) = tokio::try_join!(
-            self.qdrant.query(dense_req),
-            self.qdrant.query(sparse_req),
-        )
-        .map_err(|e| anyhow::anyhow!("Qdrant query failed: {e}"))?;
+        let (dense_res, sparse_res) =
+            tokio::try_join!(self.qdrant.query(dense_req), self.qdrant.query(sparse_req),)
+                .map_err(|e| anyhow::anyhow!("Qdrant query failed: {e}"))?;
 
         // ── Reciprocal Rank Fusion ─────────────────────────────────────────────
         let mut rrf_scores: HashMap<u64, f64> = HashMap::new();
@@ -131,7 +129,13 @@ fn payload_to_doc(payload: &HashMap<String, Value>) -> Option<EisDocuments> {
     let page = str_field(payload, "page")?;
     let chunk_index = str_field(payload, "chunk_index")?;
     let content = str_field(payload, "content")?;
-    Some(EisDocuments { id, file_name, page, chunk_index, content })
+    Some(EisDocuments {
+        id,
+        file_name,
+        page,
+        chunk_index,
+        content,
+    })
 }
 
 fn str_field(payload: &HashMap<String, Value>, key: &str) -> Option<String> {

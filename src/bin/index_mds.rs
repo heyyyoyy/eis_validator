@@ -24,10 +24,7 @@
 //! | `QDRANT_API_KEY`    | *(optional)*                  | Qdrant API key for cloud deployments      |
 //! | `QDRANT_COLLECTION` | `eis_documents`               | Target collection name                    |
 
-use std::{
-    fs,
-    path::PathBuf,
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use bm25::{Embedder, EmbedderBuilder, Language};
@@ -187,7 +184,13 @@ fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {
 fn slugify(heading: &str) -> String {
     heading
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .split('_')
         .filter(|s| !s.is_empty())
@@ -267,11 +270,9 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
-    let qdrant_url =
-        std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
+    let qdrant_url = std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
     let qdrant_api_key = std::env::var("QDRANT_API_KEY").ok();
-    let collection =
-        std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "eis_documents".into());
+    let collection = std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "eis_documents".into());
 
     info!(
         model = %model_name,
@@ -350,8 +351,9 @@ async fn main() -> Result<()> {
         }
 
         for section in &sections {
-            for (chunk_idx, content) in
-                chunk_text(&section.body, chunk_size, chunk_overlap).into_iter().enumerate()
+            for (chunk_idx, content) in chunk_text(&section.body, chunk_size, chunk_overlap)
+                .into_iter()
+                .enumerate()
             {
                 all_docs.push(EisDocuments {
                     id: format!(
@@ -442,10 +444,8 @@ async fn main() -> Result<()> {
             .zip(embeddings.into_iter())
             .map(|(doc, dense_vec)| {
                 let sparse_emb = bm25.embed(&doc.content);
-                let (sparse_indices, sparse_values) = dedup_sparse(
-                    sparse_emb.indices().copied(),
-                    sparse_emb.values().copied(),
-                );
+                let (sparse_indices, sparse_values) =
+                    dedup_sparse(sparse_emb.indices().copied(), sparse_emb.values().copied());
 
                 let named_vectors = NamedVectors::default()
                     .add_vector("dense", dense_vec)

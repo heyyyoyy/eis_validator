@@ -114,11 +114,12 @@ pub async fn query_handler(
     // ── Step 5: pipe streaming chunks into an SSE body ────────────────────────
     // Use a bounded channel to decouple the rig stream from the HTTP body stream.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(64);
-
+    let mut full_response = String::new();
     tokio::spawn(async move {
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(StreamedAssistantContent::Text(t)) => {
+                    full_response.push_str(&t.text);
                     let sse = format!("data: {}\n\n", t.text);
                     if tx.send(Ok(Bytes::from(sse))).await.is_err() {
                         break; // client disconnected
@@ -138,6 +139,7 @@ pub async fn query_handler(
         }
         // Signal end of stream.
         let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
+        debug!(full_response=full_response, "Full response");
     });
 
     let body_stream = ReceiverStream::new(rx);
@@ -178,10 +180,14 @@ pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
         }
 
         let entry = format!(
-            "[{file} p.{page}] (score: {score:.3})\n{content}",
+            "### CHUNK
+source: {file}
+page: {page}
+
+content:
+{content}",
             file = chunk.file_name,
             page = chunk.page,
-            score = score,
             content = content,
         );
 
@@ -205,18 +211,41 @@ pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
 pub(crate) fn build_system_prompt(context: &str, has_context: bool) -> String {
     if has_context {
         format!(
-            "Вы — полезный ассистент. Ответьте на вопрос пользователя, \
-            используя приведённые ниже фрагменты документов. Но без упоминания самих документов. \
-            Если во фрагментах недостаточно информации, прямо об этом скажите. \
-            --- Извлечённый контекст --- {context} --- Конец контекста ---
+            "Вы — ассистент, отвечающий строго на основе предоставленного контекста из базы знаний.
+
+ЗАДАЧА:
+- Ответьте на вопрос пользователя, используя ТОЛЬКО информацию из контекста ниже.
+- НЕ добавляйте информацию из своих знаний, если её нет в контексте.
+- НЕ ссылайтесь на «документы», «контекст» или «базу знаний» в ответе.
+
+ЕСЛИ ИНФОРМАЦИИ НЕДОСТАТОЧНО:
+- Прямо скажите, что в предоставленных данных нет полного ответа.
+- Уточните, какой информации не хватает (если возможно).
+
+ФОРМАТ ОТВЕТА:
+- Используйте структурированный и аккуратный Markdown:
+    - Заголовки (если уместно)
+    - Списки (маркированные или нумерованные)
+    - Выделение **ключевых моментов**
+- Избегайте “воды”, отвечайте по делу.
+
+--- НАЧАЛО КОНТЕКСТА ---
+{context}
+--- КОНЕЦ КОНТЕКСТА ---
+
+ОТВЕТ:
 ",
             context = context,
         )
     } else {
-        "Вы — полезный ассистент. В базе знаний не найдено релевантных \
-        документов для этого запроса. Не отвечайте, опираясь на общие знания. \
-        Сообщите пользователю, что вы не нашли нужной информации, \
-        и задайте уточняющий вопрос."
+        "Вы — ассистент, работающий с базой знаний.
+
+Если релевантная информация не найдена:
+- Сообщите об этом кратко и понятно.
+- НЕ используйте внешние знания и НЕ придумывайте ответ.
+- Задайте один уточняющий вопрос, чтобы сузить поиск.
+
+Отвечайте лаконично и по делу."
             .to_string()
     }
 }
