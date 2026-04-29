@@ -10,7 +10,8 @@ use axum::{
 use bytes::Bytes;
 use futures::StreamExt;
 use rig::{completion::CompletionModel, streaming::StreamedAssistantContent};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, warn};
 
@@ -36,6 +37,14 @@ pub struct QueryRequest {
     pub query: String,
     /// How many candidate chunks to retrieve (default: 5).
     pub top_k: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum StreamEvent<'a> {
+    Delta { text: &'a str },
+    Done,
+    Error { message: String },
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -104,6 +113,9 @@ pub async fn query_handler(
         .completion_model
         .completion_request(&query)
         .preamble(system_prompt)
+        .additional_params(json!({
+            "reasoning": { "effort": "none" }
+        }))
         .stream()
         .await
         .map_err(|e| {
@@ -114,13 +126,17 @@ pub async fn query_handler(
     // ── Step 5: pipe streaming chunks into an SSE body ────────────────────────
     // Use a bounded channel to decouple the rig stream from the HTTP body stream.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(64);
-    let mut full_response = String::new();
     tokio::spawn(async move {
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(StreamedAssistantContent::Text(t)) => {
-                    full_response.push_str(&t.text);
-                    let sse = format!("data: {}\n\n", t.text);
+                    let sse = match encode_sse_event(StreamEvent::Delta { text: &t.text }) {
+                        Ok(v) => v,
+                        Err(err) => {
+                            warn!("Failed to encode delta stream event: {err}");
+                            break;
+                        }
+                    };
                     if tx.send(Ok(Bytes::from(sse))).await.is_err() {
                         break; // client disconnected
                     }
@@ -131,15 +147,23 @@ pub async fn query_handler(
                 Ok(_) => {} // Tool calls, reasoning deltas — ignored for RAG
                 Err(e) => {
                     warn!("Streaming error: {e}");
-                    let msg = format!("data: [ERROR] {}\n\n", e);
+                    let msg = encode_sse_event(StreamEvent::Error {
+                        message: e.to_string(),
+                    })
+                    .unwrap_or_else(|ser_err| {
+                        warn!("Failed to encode error stream event: {ser_err}");
+                        "data: {\"type\":\"error\",\"message\":\"stream encoding failed\"}\n\n"
+                            .to_string()
+                    });
                     let _ = tx.send(Ok(Bytes::from(msg))).await;
                     break;
                 }
             }
         }
         // Signal end of stream.
-        let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
-        debug!(full_response=full_response, "Full response");
+        let done = encode_sse_event(StreamEvent::Done)
+            .unwrap_or_else(|_| "data: {\"type\":\"done\"}\n\n".to_string());
+        let _ = tx.send(Ok(Bytes::from(done))).await;
     });
 
     let body_stream = ReceiverStream::new(rx);
@@ -161,6 +185,11 @@ pub async fn query_handler(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
+fn encode_sse_event(event: StreamEvent<'_>) -> Result<String, serde_json::Error> {
+    let payload = serde_json::to_string(&event)?;
+    Ok(format!("data: {payload}\n\n"))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Accumulate chunk content strings, respecting `MAX_CONTEXT_CHARS`.
@@ -173,7 +202,7 @@ pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut total_chars: usize = 0;
 
-    for (score, chunk) in results {
+    for (_score, chunk) in results {
         let content = chunk.content.trim();
         if content.is_empty() {
             continue;
@@ -283,8 +312,9 @@ mod tests {
     fn context_formats_single_chunk() {
         let results = vec![(0.85, chunk("1", "doc.pdf", 3, "Hello world"))];
         let ctx = build_context(&results);
-        assert!(ctx.contains("[doc.pdf p.3]"));
-        assert!(ctx.contains("score: 0.850"));
+        assert!(ctx.contains("### CHUNK"));
+        assert!(ctx.contains("source: doc.pdf"));
+        assert!(ctx.contains("page: 3"));
         assert!(ctx.contains("Hello world"));
     }
 
@@ -337,21 +367,49 @@ mod tests {
     #[test]
     fn prompt_with_context_includes_context_block() {
         let prompt = build_system_prompt("some context", true);
-        assert!(prompt.contains("--- Извлечённый контекст ---"));
+        assert!(prompt.contains("--- НАЧАЛО КОНТЕКСТА ---"));
         assert!(prompt.contains("some context"));
-        assert!(prompt.contains("--- Конец контекста ---"));
+        assert!(prompt.contains("--- КОНЕЦ КОНТЕКСТА ---"));
     }
 
     #[test]
     fn prompt_without_context_mentions_no_documents() {
         let prompt = build_system_prompt("", false);
-        assert!(prompt.contains("не найдено релевантных"));
-        assert!(!prompt.contains("Извлечённый контекст"));
+        assert!(prompt.contains("релевантная информация не найдена"));
+        assert!(!prompt.contains("НАЧАЛО КОНТЕКСТА"));
     }
 
     #[test]
     fn prompt_with_context_instructs_language_match() {
         let prompt = build_system_prompt("ctx", true);
-        assert!(prompt.contains("на том же языке"));
+        assert!(prompt.contains("структурированный и аккуратный Markdown"));
+    }
+
+    #[test]
+    fn sse_delta_event_serializes_multiline_markdown_safely() {
+        let chunk = "### Описание ЕИС\n\nТекст с **выделением**.";
+        let encoded = encode_sse_event(StreamEvent::Delta { text: chunk }).unwrap();
+        assert!(encoded.starts_with("data: {\"type\":\"delta\",\"text\":"));
+        // Newlines must stay inside JSON escapes, not as raw SSE line breaks.
+        assert!(encoded.contains("\\n\\n"));
+        assert!(encoded.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn sse_done_event_serializes_as_json() {
+        let encoded = encode_sse_event(StreamEvent::Done).unwrap();
+        assert_eq!(encoded, "data: {\"type\":\"done\"}\n\n");
+    }
+
+    #[test]
+    fn sse_error_event_serializes_as_json() {
+        let encoded = encode_sse_event(StreamEvent::Error {
+            message: "boom".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            encoded,
+            "data: {\"type\":\"error\",\"message\":\"boom\"}\n\n"
+        );
     }
 }

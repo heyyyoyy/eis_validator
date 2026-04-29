@@ -2156,9 +2156,9 @@ dependencies = [
 
 [[package]]
 name = "rig-core"
-version = "0.35.0"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31caace97ed9646cfb713f32f8321c9fe5dc6ee4390ff5041b565163bf900dc"
+checksum = "9ac7d75266ac1f79b1faeff611c85cb40be00a0a983db10036591424f0433dc1"
 dependencies = [
  "as-any",
  "async-stream",
@@ -2190,9 +2190,9 @@ dependencies = [
 
 [[package]]
 name = "rig-derive"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7590f1ffc5cef2af569072500c3ee02836c6cfb9faee9b6f0fc140428a50891"
+checksum = "dc1a6de0e69cfc929772efa85c19602a341b5837aba5eafe8339ccb26f185116"
 dependencies = [
  "convert_case",
  "deluxe",
@@ -2205,9 +2205,9 @@ dependencies = [
 
 [[package]]
 name = "rig-qdrant"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945f155b1c0a44a2152b9b78e138feb0966a5a26fd8aba133a1aa8d78f00e4d1"
+checksum = "0f896639500c03b71765ca19e59d01bac488210f6b054c9f015d380df106c137"
 dependencies = [
  "qdrant-client",
  "rig-core",

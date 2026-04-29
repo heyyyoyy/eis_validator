@@ -129,18 +129,16 @@ fn parse_sections(source: &str) -> Vec<Section> {
                     current_body.push(' ');
                 }
             }
-            Event::SoftBreak | Event::HardBreak => {
-                if !in_heading {
-                    current_body.push('\n');
-                }
+            Event::SoftBreak | Event::HardBreak if !in_heading => {
+                current_body.push('\n');
             }
             Event::End(TagEnd::Paragraph)
             | Event::End(TagEnd::Item)
             | Event::End(TagEnd::BlockQuote(_))
-            | Event::End(TagEnd::CodeBlock) => {
-                if !in_heading {
-                    current_body.push('\n');
-                }
+            | Event::End(TagEnd::CodeBlock)
+                if !in_heading =>
+            {
+                current_body.push('\n');
             }
             _ => {}
         }
@@ -288,7 +286,8 @@ async fn main() -> Result<()> {
 
     // ── OpenAI / embedding client ─────────────────────────────────────────────
 
-    let oai_client = openai::Client::from_env();
+    let oai_client =
+        openai::Client::from_env().context("creating OpenAI client from environment")?;
     let embed_model = oai_client.embedding_model_with_ndims(&model_name, ndims);
 
     // ── Qdrant client ─────────────────────────────────────────────────────────

@@ -6,6 +6,62 @@ export interface StreamQueryCallbacks {
   onError: (message: string) => void;
 }
 
+type JsonStreamEvent =
+  | { type: "delta"; text?: string }
+  | { type: "done" }
+  | { type: "error"; message?: string };
+
+type ParsedStreamEvent =
+  | { kind: "delta"; text: string }
+  | { kind: "done" }
+  | { kind: "error"; message: string };
+
+export function extractSseEvents(buffer: string): { events: string[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const parts = normalized.split("\n\n");
+  const lastPart = parts.length > 0 ? parts[parts.length - 1] : "";
+  return {
+    events: parts.slice(0, -1),
+    rest: lastPart ?? "",
+  };
+}
+
+export function decodeSseEvent(eventBlock: string): ParsedStreamEvent | null {
+  const dataLines: string[] = [];
+
+  for (const rawLine of eventBlock.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) continue;
+    if (!line.startsWith("data:")) continue;
+    dataLines.push(line[5] === " " ? line.slice(6) : line.slice(5));
+  }
+
+  if (dataLines.length === 0) return null;
+
+  const payload = dataLines.join("\n");
+  if (payload === "[DONE]") return { kind: "done" };
+  if (payload.startsWith("[ERROR]")) {
+    return { kind: "error", message: payload.slice(7).trim() || "Stream error" };
+  }
+
+  try {
+    const json = JSON.parse(payload) as JsonStreamEvent;
+    if (json.type === "delta") {
+      return { kind: "delta", text: json.text ?? "" };
+    }
+    if (json.type === "done") {
+      return { kind: "done" };
+    }
+    if (json.type === "error") {
+      return { kind: "error", message: json.message ?? "Stream error" };
+    }
+  } catch {
+    // Backward compatible mode: non-JSON payload is treated as a text delta.
+  }
+
+  return { kind: "delta", text: payload };
+}
+
 /**
  * POST /query and consume the SSE stream.
  * Returns an AbortController — call `.abort()` to cancel mid-stream.
@@ -59,27 +115,22 @@ export function streamQuery(
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
+        const { events, rest } = extractSseEvents(buffer);
+        buffer = rest;
 
-        for (const part of parts) {
-          // SSE spec: strip only the single optional space after "data:"
-          // Do NOT trim further — the payload may start with a space that is
-          // part of the streamed token (e.g. " world" → word boundary).
-          const line = part.trimEnd();
-          if (!line.startsWith("data:")) continue;
-          // Remove the fixed prefix "data:" and exactly one space if present.
-          const payload = line[5] === " " ? line.slice(6) : line.slice(5);
+        for (const eventBlock of events) {
+          const event = decodeSseEvent(eventBlock);
+          if (!event) continue;
 
-          if (payload === "[DONE]") {
+          if (event.kind === "done") {
             onDone();
             return;
           }
-          if (payload.startsWith("[ERROR]")) {
-            onError(payload.slice(7).trim());
+          if (event.kind === "error") {
+            onError(event.message);
             return;
           }
-          onChunk(payload);
+          onChunk(event.text);
         }
       }
     } catch (err) {
