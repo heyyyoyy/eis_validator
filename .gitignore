@@ -15,3 +15,5 @@ qdrant_storage/
 
 # External documentation
 external_docs/
+
+.DS_Store

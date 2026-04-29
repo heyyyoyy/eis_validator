@@ -25,7 +25,7 @@ export function App() {
             letterSpacing: "-0.02em",
             color: "#fff",
           }}>
-            EIS Package Parser
+            EIS Assistant
           </h1>
           <span style={{
             fontFamily: "'JetBrains Mono', monospace",

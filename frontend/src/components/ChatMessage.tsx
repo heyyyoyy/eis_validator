@@ -36,7 +36,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           paddingInline: "0.25rem",
         }}
       >
-        {isUser ? "you" : "EIS Helper"}
+        {isUser ? "you" : "EIS Assistant"}
       </span>
 
       {/* Bubble */}

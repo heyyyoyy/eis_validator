@@ -1,4 +1,4 @@
-# eis_validator
+# EIS Assistant
 
 A full-stack app for working with **EIS transport package** XML: a **Rust (Axum)** API validates XML against the bundled XSD, extracts payloads from SOAP envelopes, and answers natural-language questions via a **RAG pipeline** (hybrid vector search over Qdrant + LLM completion). A **React (Vite)** UI talks to that API through a dev proxy or Nginx in production.
 
@@ -132,11 +132,11 @@ Open the URL Vite prints (typically http://localhost:5173). To point the proxy a
 The `/query` endpoint requires the Qdrant collection to be populated first. Use the `index_mds` binary to embed and index Markdown files:
 
 ```bash
-# Against the containerized Qdrant (dev compose running)
-QDRANT_URL=http://localhost:6334 cargo run --bin index_mds -- --dir external_docs
+# Create a new collection
+cargo run --bin index_mds -- --dir external_docs
 
 # Append to an existing collection (skip recreation)
-QDRANT_URL=http://localhost:6334 cargo run --bin index_mds -- --dir external_docs --append
+cargo run --bin index_mds -- --dir external_docs --append
 ```
 
 See `.env.example` for all `index_mds` tunables (`CHUNK_SIZE`, `CHUNK_OVERLAP`, `BATCH_SIZE`, `EMBEDDING_MODEL`, etc.).

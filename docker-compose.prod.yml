@@ -1,7 +1,7 @@
 # Production — nginx + TLS (certs from one-shot cert-gen), resource limits.
 #   docker compose -f docker-compose.prod.yml up --build -d
 
-name: eis_validator
+name: eis_assistant
 
 services:
 

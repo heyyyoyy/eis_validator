@@ -39,7 +39,7 @@ RUN useradd -r -s /bin/false -u 1001 appuser
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/eis_validator /app/eis_validator
+COPY --from=builder /build/target/release/eis_assistant /app/eis_assistant
 COPY --from=builder /build/schemas /app/schemas
 
 RUN chown -R appuser:appuser /app
@@ -55,4 +55,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-ENTRYPOINT ["/app/eis_validator"]
+ENTRYPOINT ["/app/eis_assistant"]

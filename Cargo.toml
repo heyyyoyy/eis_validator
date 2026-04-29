@@ -1,8 +1,8 @@
 [package]
-name = "eis_validator"
+name = "eis_assistant"
 version = "0.1.0"
 edition = "2021"
-default-run = "eis_validator"
+default-run = "eis_assistant"
 
 [[bin]]
 name = "index_mds"
