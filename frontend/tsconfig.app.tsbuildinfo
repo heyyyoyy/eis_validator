@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/components/fileupload.tsx","./src/components/statusbanner.tsx","./src/components/xmlpanel.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/components/ChatMessage.tsx","./src/components/FileUpload.tsx","./src/components/StatusBanner.tsx","./src/components/ValidationPanel.tsx","./src/components/XmlPanel.tsx","./src/pages/ChatPage.tsx","./src/pages/ValidatorPage.tsx","./src/utils/validation.ts"],"version":"5.9.3"}
