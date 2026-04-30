@@ -75,7 +75,7 @@ pub async fn query_handler(
     let top_k = payload.top_k.unwrap_or(DEFAULT_TOP_K);
 
     // ── Step 1: vector similarity search ─────────────────────────────────────
-    let results: Vec<(f64, EisDocuments)> =
+    let results: Vec<(f32, EisDocuments)> =
         state.repository.search(&query, top_k).await.map_err(|e| {
             tracing::error!("Vector search failed: {e}");
             AppError::InternalMsg(e.to_string())
@@ -194,7 +194,7 @@ fn encode_sse_event(event: StreamEvent<'_>) -> Result<String, serde_json::Error>
 
 /// Accumulate chunk content strings, respecting `MAX_CONTEXT_CHARS`.
 /// Chunks are already ordered by descending similarity score.
-pub(crate) fn build_context(results: &[(f64, EisDocuments)]) -> String {
+pub(crate) fn build_context(results: &[(f32, EisDocuments)]) -> String {
     if results.is_empty() {
         return String::new();
     }

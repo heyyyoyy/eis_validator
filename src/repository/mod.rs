@@ -4,17 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bm25::{Embedder, EmbedderBuilder, Language};
-use qdrant_client::qdrant::{QueryPointsBuilder, ScoredPoint, Value, VectorInput};
+use qdrant_client::qdrant::{
+    PrefetchQueryBuilder, Query, QueryPointsBuilder, RrfBuilder, Value, VectorInput,
+};
 use qdrant_client::Qdrant;
 use rig::embeddings::EmbeddingModel;
 use rig::providers::openai;
+use tracing::warn;
 
 use crate::repository::eis_documents::EisDocuments;
 
 pub type EmbedModel = openai::EmbeddingModel;
 
 /// RRF constant — higher k de-emphasises rank differences between the two lists.
-const RRF_K: f64 = 60.0;
+const RRF_K: u32 = 60;
 
 pub struct EisRepository {
     pub qdrant: Arc<Qdrant>,
@@ -32,7 +35,7 @@ impl EisRepository {
         &self,
         query: &str,
         top_k: u64,
-    ) -> anyhow::Result<Vec<(f64, EisDocuments)>> {
+    ) -> anyhow::Result<Vec<(f32, EisDocuments)>> {
         let fetch_limit = top_k * 2; // retrieve more candidates before RRF merge
 
         // ── Dense embedding ───────────────────────────────────────────────────
@@ -50,77 +53,43 @@ impl EisRepository {
             bm25_embedding.values().copied(),
         );
 
-        // ── Parallel Qdrant queries ───────────────────────────────────────────
-        let dense_req = QueryPointsBuilder::new(&self.collection)
-            .query(dense_vec)
-            .using("dense")
-            .limit(fetch_limit)
-            .with_payload(true)
-            .build();
+        let hybrid_result = self
+            .qdrant
+            .query(
+                QueryPointsBuilder::new(&self.collection)
+                    .add_prefetch(
+                        PrefetchQueryBuilder::default()
+                            .query(dense_vec)
+                            .using("dense")
+                            .limit(fetch_limit),
+                    )
+                    .add_prefetch(
+                        PrefetchQueryBuilder::default()
+                            .query(VectorInput::new_sparse(sparse_indices, sparse_values))
+                            .using("sparse")
+                            .limit(fetch_limit),
+                    )
+                    .query(Query::new_rrf(RrfBuilder::with_k(RRF_K)))
+                    .with_payload(true),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Qdrant query failed: {e}"))?;
 
-        let sparse_req = QueryPointsBuilder::new(&self.collection)
-            .query(VectorInput::new_sparse(sparse_indices, sparse_values))
-            .using("sparse")
-            .limit(fetch_limit)
-            .with_payload(true)
-            .build();
-
-        let (dense_res, sparse_res) =
-            tokio::try_join!(self.qdrant.query(dense_req), self.qdrant.query(sparse_req),)
-                .map_err(|e| anyhow::anyhow!("Qdrant query failed: {e}"))?;
-
-        // ── Reciprocal Rank Fusion ─────────────────────────────────────────────
-        let mut rrf_scores: HashMap<u64, f64> = HashMap::new();
-
-        for (rank, point) in dense_res.result.iter().enumerate() {
-            if let Some(id) = point_numeric_id(point) {
-                *rrf_scores.entry(id).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
-            }
-        }
-        for (rank, point) in sparse_res.result.iter().enumerate() {
-            if let Some(id) = point_numeric_id(point) {
-                *rrf_scores.entry(id).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
-            }
-        }
-
-        // Build a lookup map: numeric id → first seen ScoredPoint
-        let mut point_map: HashMap<u64, &ScoredPoint> = HashMap::new();
-        for pt in dense_res.result.iter().chain(sparse_res.result.iter()) {
-            if let Some(id) = point_numeric_id(pt) {
-                point_map.entry(id).or_insert(pt);
-            }
-        }
-
-        // Sort by descending RRF score, take top_k
-        let mut ranked: Vec<(u64, f64)> = rrf_scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        ranked.truncate(top_k as usize);
-
-        let mut results = Vec::with_capacity(ranked.len());
-        for (id, score) in ranked {
-            if let Some(pt) = point_map.get(&id) {
-                if let Some(doc) = payload_to_doc(&pt.payload) {
-                    results.push((score, doc));
+        let results: Vec<(f32, EisDocuments)> = hybrid_result
+            .result
+            .iter()
+            .filter_map(|point| match payload_to_doc(&point.payload) {
+                Some(doc) => Some((point.score, doc)),
+                None => {
+                    warn!("Skipping point with missing payload");
+                    None
                 }
-            }
-        }
+            })
+            .take(top_k as usize)
+            .collect();
 
         Ok(results)
     }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn point_numeric_id(pt: &ScoredPoint) -> Option<u64> {
-    pt.id.as_ref().and_then(|pid| {
-        pid.point_id_options.as_ref().and_then(|opt| {
-            if let qdrant_client::qdrant::point_id::PointIdOptions::Num(n) = opt {
-                Some(*n)
-            } else {
-                None
-            }
-        })
-    })
 }
 
 fn payload_to_doc(payload: &HashMap<String, Value>) -> Option<EisDocuments> {

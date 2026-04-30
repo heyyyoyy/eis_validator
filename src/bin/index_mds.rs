@@ -24,7 +24,8 @@
 //! | `QDRANT_API_KEY`    | *(optional)*                  | Qdrant API key for cloud deployments      |
 //! | `QDRANT_COLLECTION` | `eis_documents`               | Target collection name                    |
 
-use std::{fs, path::PathBuf};
+use std::hash::{Hash, Hasher as _};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use bm25::{Embedder, EmbedderBuilder, Language};
@@ -205,7 +206,6 @@ fn dedup_sparse(
     indices: impl Iterator<Item = u32>,
     values: impl Iterator<Item = f32>,
 ) -> (Vec<u32>, Vec<f32>) {
-    use std::collections::BTreeMap;
     let mut map: BTreeMap<u32, f32> = BTreeMap::new();
     for (idx, val) in indices.zip(values) {
         *map.entry(idx).or_insert(0.0) += val;
@@ -216,7 +216,6 @@ fn dedup_sparse(
 /// Derive a stable numeric ID from a string so that re-indexing the same chunk
 /// always produces the same Qdrant point ID (upsert semantics).
 fn point_id_from_str(id: &str) -> u64 {
-    use std::hash::{Hash, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     id.hash(&mut h);
     h.finish()
